@@ -1,0 +1,10 @@
+{
+  "description": "Streamline API testing for teams with a user-friendly dashboard, allowing admins to manage project members and users to access assigned projects effortlessly.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
