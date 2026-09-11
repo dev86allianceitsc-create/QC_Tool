@@ -10,5 +10,18 @@
     "format:web": "pnpm -F web format",
     "typecheck:web": "pnpm -F web typecheck"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "dotenv": "^17.4.2",
+    "prisma": "7.10.0"
+  },
+  "dependencies": {
+    "@prisma/client": "7.10.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@prisma/client",
+      "@prisma/engines",
+      "prisma"
+    ]
+  }
 }

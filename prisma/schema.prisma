@@ -1,0 +1,98 @@
+// Database Phase B — User & Authentication implementation.
+// Source of truth: document/database/Database_AnD.docx (post VARCHAR Physical
+// Design Decision, approved 2026-09-11) and document/database/Database_Standard_v2.0.docx.
+//
+// Scope: users, user_sessions, projects, project_memberships ONLY.
+// audit_logs is intentionally excluded — target_id physical type is still TBD,
+// generic audit target modeling is unresolved, and audit policy is TBD.
+
+datasource db {
+  provider = "postgresql"
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  userId          String  @id @default(uuid()) @map("user_id") @db.Uuid
+  email           String  @unique @db.VarChar(320)
+  googleSubjectId String? @unique @map("google_subject_id") @db.VarChar(255)
+  systemRole      String  @map("system_role") @db.VarChar(20)
+
+  // account_status: VARCHAR(30) length is a finalized Physical Design Decision
+  // (approved 2026-09-11). The value domain/lifecycle is still TBD (Status
+  // Dictionary not confirmed), so no CHECK constraint is applied yet.
+  accountStatus String @map("account_status") @db.VarChar(30)
+
+  activatedAt DateTime? @map("activated_at") @db.Timestamptz
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+  note        String?   @db.Text
+
+  sessions    UserSession[]
+  memberships ProjectMembership[]
+
+  @@map("users")
+}
+
+model UserSession {
+  sessionId String @id @default(uuid()) @map("session_id") @db.Uuid
+
+  userId String @map("user_id") @db.Uuid
+  // onDelete: Restrict is a DESIGN PROPOSAL / interim physical decision
+  // (approved 2026-09-11), not Requirement-confirmed.
+  user   User   @relation(fields: [userId], references: [userId], onDelete: Restrict)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  // No DB default — session lifetime is application/config policy, not a
+  // fixed DB-side value (Database Design Decision Proposal, 2026-09-11).
+  expiresAt DateTime @map("expires_at") @db.Timestamptz
+
+  revokedAt        DateTime? @map("revoked_at") @db.Timestamptz
+  revocationReason String?   @map("revocation_reason") @db.VarChar(255)
+  note             String?   @db.Text
+
+  // No `status` column. Session state is derived, not stored:
+  //   revoked_at IS NOT NULL                     -> REVOKED
+  //   revoked_at IS NULL AND now() >= expires_at  -> EXPIRED
+  //   revoked_at IS NULL AND now() <  expires_at  -> ACTIVE
+
+  @@map("user_sessions")
+}
+
+model Project {
+  projectId String @id @default(uuid()) @map("project_id") @db.Uuid
+
+  // UNIQUE is still TBD in the AnD (PRJ team confirmation pending) —
+  // intentionally not applied here.
+  projectName String @map("project_name") @db.VarChar(255)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+  note      String?  @db.Text
+
+  memberships ProjectMembership[]
+
+  @@map("projects")
+}
+
+model ProjectMembership {
+  userId    String @map("user_id") @db.Uuid
+  projectId String @map("project_id") @db.Uuid
+
+  // Both onDelete: Restrict are DESIGN PROPOSAL / interim physical decisions
+  // (approved 2026-09-11), not Requirement-confirmed.
+  user    User    @relation(fields: [userId], references: [userId], onDelete: Restrict)
+  project Project @relation(fields: [projectId], references: [projectId], onDelete: Restrict)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  note      String?  @db.Text
+
+  @@id([userId, projectId], map: "pk_project_memberships")
+  @@map("project_memberships")
+}
+
+// audit_logs is DEFERRED — not modeled in this schema (see Database AnD
+// Section 9 Revision Log and Section 4.4).
