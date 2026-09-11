@@ -11,15 +11,26 @@ A Vite development server is **already running** on `$PORT` (default 8443). You 
 
 ## Project Structure
 
-This is the canonical project structure. Start with task-relevant files below. Only follow imports or inspect other files when required, when a documented path is missing, or when the repository contradicts this guide.
+This is a pnpm monorepo. Start with task-relevant files below. Only follow imports or inspect other files when required, when a documented path is missing, or when the repository contradicts this guide.
 
-- `src/main.tsx` - React entrypoint; imports `src/index.css` and mounts `src/App.tsx` into the `#root` element
-- `src/App.tsx` - Primary application component and the usual starting point for UI work
-- `src/index.css` - Global CSS entrypoint and Tailwind CSS v4 import
-- `index.html` - Vite HTML shell containing the `#root` element and loading `src/main.tsx`
-- `package.json` - Project dependencies and the Vite build, development, preview, and formatting scripts
-- `vite.config.ts` - Vite configuration with React, Tailwind CSS v4, and Figma Make plugins plus the `@` alias for `src`
+### Web Application (Frontend)
+
+- `apps/web/src/main.tsx` - React entrypoint; imports `apps/web/src/index.css` and mounts `apps/web/src/App.tsx` into the `#root` element
+- `apps/web/src/App.tsx` - Primary application component and the usual starting point for UI work
+- `apps/web/src/index.css` - Global CSS entrypoint and Tailwind CSS v4 import
+- `apps/web/index.html` - Vite HTML shell containing the `#root` element and loading `apps/web/src/main.tsx`
+- `apps/web/package.json` - Frontend dependencies and the Vite build, development, preview, and formatting scripts
+- `apps/web/vite.config.ts` - Vite configuration with React, Tailwind CSS v4, and Figma Make plugins plus the `@` alias for `src`
+- `apps/web/tsconfig.json` - TypeScript configuration with `@` alias for `apps/web/src`
+
+### Monorepo Root
+
+- `package.json` - Root workspace configuration with convenient scripts (`pnpm dev:web`, `pnpm build:web`, etc.)
+- `pnpm-workspace.yaml` - pnpm workspace declaration
 - `.mise.toml` - Toolchain versions for Node.js and pnpm
+- `packages/shared-types/` - Shared type definitions (scaffold)
+- `prisma/` - Database infrastructure (placeholder)
+- `document/` - Authoritative requirements, API design, database design, UI mapping
 
 ## Dependencies
 
