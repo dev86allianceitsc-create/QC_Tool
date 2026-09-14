@@ -1,25 +1,10 @@
-import { useState, useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useAuth } from "./features/auth/useAuth";
+import { ERROR_MESSAGES, type LoginErrorType } from "./features/auth/auth.types";
 
-type Screen =
-  | "signin"
-  | "signin-loading"
-  | "signin-error"
-  | "dashboard"
-  | "no-project"
-  | "project-detail"
-  | "members"
-  | "access-denied"
-  | "session-expired";
-
-type LoginErrorType =
-  | "google-auth-failed"
-  | "auth-cancelled"
-  | "email-not-verified"
-  | "user-not-registered"
-  | "account-linking-conflict"
-  | "account-unavailable"
-  | "system-role-missing"
-  | "service-unavailable";
+// Post-authentication navigation only. Sign-in sub-states ("signin",
+// "signin-loading", "signin-error") now live in useAuth's AuthScreen instead.
+type Screen = "dashboard" | "no-project" | "project-detail" | "members" | "access-denied";
 
 type Role = "ADMIN" | "USER";
 type MemberStatus = "ACTIVE" | "INVITED" | "INACTIVE" | "BLOCKED";
@@ -42,7 +27,10 @@ interface Member {
   addedAt: string;
 }
 
-const CURRENT_USER: User = {
+// Prototype-only demo identity — NOT an authenticated user. Used solely to
+// populate the "Development Only - Demo Controls" bypass below, which is
+// gated to import.meta.env.DEV and never used for the real auth path.
+const DEMO_USER: User = {
   email: "user@example.com",
   role: "ADMIN",
 };
@@ -61,17 +49,6 @@ const INITIAL_MEMBERS: Member[] = [
   { id: "m4", email: "user3@example.com", role: "USER", status: "ACTIVE", addedAt: "2025-07-22" },
   { id: "m5", email: "user4@example.com", role: "USER", status: "INACTIVE", addedAt: "2025-06-15" },
 ];
-
-const ERROR_MESSAGES: Record<LoginErrorType, { title: string; message: string }> = {
-  "google-auth-failed": { title: "Google authentication failed", message: "Verify your credentials and try again" },
-  "auth-cancelled": { title: "Sign in cancelled", message: "You cancelled the Google sign in process" },
-  "email-not-verified": { title: "Email not verified", message: "Your Google account email must be verified" },
-  "user-not-registered": { title: "Account not found", message: "Contact administrator to create an account" },
-  "account-linking-conflict": { title: "Account conflict", message: "Multiple QC Tool accounts linked to this email" },
-  "account-unavailable": { title: "Account unavailable", message: "Your account is suspended or unavailable" },
-  "system-role-missing": { title: "Configuration error", message: "Your system role is not properly configured" },
-  "service-unavailable": { title: "Service unavailable", message: "Authentication service temporarily down" },
-};
 
 function SigningInScreen() {
   return (
@@ -101,7 +78,17 @@ function SignInErrorScreen({ errorType, onTryAgain }: { errorType: LoginErrorTyp
   );
 }
 
-function SignInScreen({ onSignIn, onError, onStartLoading }: { onSignIn: (hasProjects: boolean) => void; onError: (errorType: LoginErrorType) => void; onStartLoading: () => void }) {
+function SignInScreen({
+  onSignIn,
+  onError,
+  onStartLoading,
+  showDemoControls,
+}: {
+  onSignIn: (hasProjects: boolean) => void;
+  onError: (errorType: LoginErrorType) => void;
+  onStartLoading: () => void;
+  showDemoControls: boolean;
+}) {
   return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", backgroundColor: "#fff" }}>
       <div style={{ border: "1px solid #999", padding: "40px", width: "400px" }}>
@@ -110,29 +97,31 @@ function SignInScreen({ onSignIn, onError, onStartLoading }: { onSignIn: (hasPro
         <button onClick={onStartLoading} style={{ width: "100%", padding: "12px", marginBottom: "10px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
           Sign in with Google
         </button>
-        <div style={{ marginTop: "20px", padding: "10px", border: "1px dashed #ccc", backgroundColor: "#f9f9f9" }}>
-          <p style={{ fontSize: "11px", color: "#666", margin: "5px 0" }}>*** Development Only - Demo Controls ***</p>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "5px" }}>
-            <button onClick={() => onSignIn(true)} style={{ fontSize: "11px", padding: "5px 10px", border: "1px solid #ccc", cursor: "pointer" }}>
-              Dashboard
-            </button>
-            <button onClick={() => onSignIn(false)} style={{ fontSize: "11px", padding: "5px 10px", border: "1px solid #ccc", cursor: "pointer" }}>
-              No Project
-            </button>
-            <button onClick={() => { onStartLoading(); setTimeout(() => onError("user-not-registered"), 2000); }} style={{ fontSize: "11px", padding: "5px 10px", border: "1px solid #ccc", cursor: "pointer" }}>
-              Not Registered
-            </button>
-            <button onClick={() => onError("google-auth-failed")} style={{ fontSize: "11px", padding: "5px 10px", border: "1px solid #ccc", cursor: "pointer" }}>
-              Auth Failed
-            </button>
-            <button onClick={() => onError("email-not-verified")} style={{ fontSize: "11px", padding: "5px 10px", border: "1px solid #ccc", cursor: "pointer" }}>
-              Email Not Verified
-            </button>
-            <button onClick={() => onError("account-unavailable")} style={{ fontSize: "11px", padding: "5px 10px", border: "1px solid #ccc", cursor: "pointer" }}>
-              Account Unavailable
-            </button>
+        {showDemoControls && (
+          <div style={{ marginTop: "20px", padding: "10px", border: "1px dashed #ccc", backgroundColor: "#f9f9f9" }}>
+            <p style={{ fontSize: "11px", color: "#666", margin: "5px 0" }}>*** Development Only - Demo Controls ***</p>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "5px" }}>
+              <button onClick={() => onSignIn(true)} style={{ fontSize: "11px", padding: "5px 10px", border: "1px solid #ccc", cursor: "pointer" }}>
+                Dashboard
+              </button>
+              <button onClick={() => onSignIn(false)} style={{ fontSize: "11px", padding: "5px 10px", border: "1px solid #ccc", cursor: "pointer" }}>
+                No Project
+              </button>
+              <button onClick={() => { onStartLoading(); setTimeout(() => onError("user-not-registered"), 2000); }} style={{ fontSize: "11px", padding: "5px 10px", border: "1px solid #ccc", cursor: "pointer" }}>
+                Not Registered
+              </button>
+              <button onClick={() => onError("google-auth-failed")} style={{ fontSize: "11px", padding: "5px 10px", border: "1px solid #ccc", cursor: "pointer" }}>
+                Auth Failed
+              </button>
+              <button onClick={() => onError("email-not-verified")} style={{ fontSize: "11px", padding: "5px 10px", border: "1px solid #ccc", cursor: "pointer" }}>
+                Email Not Verified
+              </button>
+              <button onClick={() => onError("account-unavailable")} style={{ fontSize: "11px", padding: "5px 10px", border: "1px solid #ccc", cursor: "pointer" }}>
+                Account Unavailable
+              </button>
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   );
@@ -447,10 +436,37 @@ function SessionExpiredModal({ onSignInAgain }: { onSignInAgain: () => void }) {
 }
 
 export default function App() {
-  const [screen, setScreen] = useState<Screen>("signin");
-  const [loginError, setLoginError] = useState<LoginErrorType | null>(null);
+  const auth = useAuth();
+  const [screen, setScreen] = useState<Screen>("dashboard");
   const [members, setMembers] = useState<Member[]>(INITIAL_MEMBERS);
-  const [showSessionExpired, setShowSessionExpired] = useState(false);
+
+  // Demo-mode bypass state (dev only) — completely independent of `auth` so
+  // demo controls can never be mistaken for evidence of real authentication.
+  const [demoUser, setDemoUser] = useState<User | null>(null);
+  const [demoPhase, setDemoPhase] = useState<"idle" | "loading" | "error">("idle");
+  const [demoError, setDemoError] = useState<LoginErrorType | null>(null);
+
+  const wasAuthenticated = useRef(false);
+  useEffect(() => {
+    if (auth.user && !wasAuthenticated.current) {
+      // A fresh real sign-in always lands on the (mocked) project dashboard —
+      // Project/Member data isn't wired to a real backend in this milestone.
+      wasAuthenticated.current = true;
+      setScreen("dashboard");
+    }
+    if (!auth.user) {
+      wasAuthenticated.current = false;
+    }
+  }, [auth.user]);
+
+  const activeUser: User | null = auth.user ? { email: auth.user.email, role: auth.user.systemRole } : demoUser;
+
+  function handleLogout() {
+    setDemoUser(null);
+    setDemoPhase("idle");
+    setScreen("dashboard");
+    void auth.signOut();
+  }
 
   function handleAddMember(email: string) {
     const newMember: Member = {
@@ -471,25 +487,51 @@ export default function App() {
     setMembers(members.filter((m) => m.id !== id));
   }
 
+  if (!activeUser) {
+    const showingDemoLoading = demoPhase === "loading";
+    const showingDemoError = demoPhase === "error" && demoError;
+
+    return (
+      <div style={{ height: "100vh", overflow: "hidden" }}>
+        {showingDemoLoading && <SigningInScreen />}
+
+        {showingDemoError && <SignInErrorScreen errorType={demoError} onTryAgain={() => setDemoPhase("idle")} />}
+
+        {!showingDemoLoading && !showingDemoError && auth.screen === "signin" && (
+          <SignInScreen
+            onSignIn={(has) => { setDemoUser({ ...DEMO_USER }); setScreen(has ? "dashboard" : "no-project"); }}
+            onError={(err) => { setDemoError(err); setDemoPhase("error"); }}
+            onStartLoading={auth.signInWithGoogle}
+            showDemoControls={import.meta.env.DEV}
+          />
+        )}
+
+        {!showingDemoLoading && !showingDemoError && auth.screen === "signin-loading" && <SigningInScreen />}
+
+        {!showingDemoLoading && !showingDemoError && auth.screen === "signin-error" && auth.loginError && (
+          <SignInErrorScreen errorType={auth.loginError} onTryAgain={auth.retryFromError} />
+        )}
+
+        {auth.sessionExpired && <SessionExpiredModal onSignInAgain={auth.dismissSessionExpired} />}
+      </div>
+    );
+  }
+
+  const onShowSessionExpired = import.meta.env.DEV ? auth.debugShowSessionExpired : undefined;
+
   return (
     <div style={{ height: "100vh", overflow: "hidden" }}>
-      {screen === "signin" && <SignInScreen onSignIn={(has) => setScreen(has ? "dashboard" : "no-project")} onError={(err) => { setLoginError(err); setScreen("signin-error"); }} onStartLoading={() => setScreen("signin-loading")} />}
+      {screen === "dashboard" && <ProjectListScreen user={activeUser} projects={PROJECTS} onSelectProject={() => setScreen("project-detail")} onLogout={handleLogout} onShowSessionExpired={onShowSessionExpired} />}
 
-      {screen === "signin-loading" && <SigningInScreen />}
+      {screen === "no-project" && <NoProjectScreen user={activeUser} onLogout={handleLogout} onRefresh={() => {}} onShowSessionExpired={onShowSessionExpired} />}
 
-      {screen === "signin-error" && loginError && <SignInErrorScreen errorType={loginError} onTryAgain={() => setScreen("signin")} />}
+      {screen === "project-detail" && <ProjectDetailScreen user={activeUser} project={PROJECTS[0]} onBack={() => setScreen("dashboard")} onLogout={handleLogout} onMembersClick={() => setScreen("members")} onShowSessionExpired={onShowSessionExpired} />}
 
-      {screen === "dashboard" && <ProjectListScreen user={CURRENT_USER} projects={PROJECTS} onSelectProject={() => setScreen("project-detail")} onLogout={() => setScreen("signin")} onShowSessionExpired={() => setShowSessionExpired(true)} />}
-
-      {screen === "no-project" && <NoProjectScreen user={CURRENT_USER} onLogout={() => setScreen("signin")} onRefresh={() => {}} onShowSessionExpired={() => setShowSessionExpired(true)} />}
-
-      {screen === "project-detail" && <ProjectDetailScreen user={CURRENT_USER} project={PROJECTS[0]} onBack={() => setScreen("dashboard")} onLogout={() => setScreen("signin")} onMembersClick={() => setScreen("members")} onShowSessionExpired={() => setShowSessionExpired(true)} />}
-
-      {screen === "members" && <MembersScreen user={CURRENT_USER} members={members} onBack={() => setScreen("project-detail")} onLogout={() => setScreen("signin")} onAddMember={handleAddMember} onEditMember={handleEditMember} onCancelMember={handleCancelMember} onShowSessionExpired={() => setShowSessionExpired(true)} />}
+      {screen === "members" && <MembersScreen user={activeUser} members={members} onBack={() => setScreen("project-detail")} onLogout={handleLogout} onAddMember={handleAddMember} onEditMember={handleEditMember} onCancelMember={handleCancelMember} onShowSessionExpired={onShowSessionExpired} />}
 
       {screen === "access-denied" && <AccessDeniedScreen onBack={() => setScreen("dashboard")} />}
 
-      {showSessionExpired && <SessionExpiredModal onSignInAgain={() => { setShowSessionExpired(false); setScreen("signin"); }} />}
+      {auth.sessionExpired && <SessionExpiredModal onSignInAgain={auth.dismissSessionExpired} />}
     </div>
   );
 }

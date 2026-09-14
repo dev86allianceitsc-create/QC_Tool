@@ -21,8 +21,13 @@ model User {
   systemRole      String  @map("system_role") @db.VarChar(20)
 
   // account_status: VARCHAR(30) length is a finalized Physical Design Decision
-  // (approved 2026-09-11). The value domain/lifecycle is still TBD (Status
-  // Dictionary not confirmed), so no CHECK constraint is applied yet.
+  // (approved 2026-09-11). Domain (INVITED, ACTIVE, INACTIVE, BLOCKED) and the
+  // INVITED->ACTIVE transition are CONFIRMED (Database AnD Section 4.1/5,
+  // updated 2026-09-14); enforced via a raw CHECK constraint
+  // (ck_users_account_status, migration 20260914180000) not modeled here —
+  // Prisma's declarative schema doesn't represent raw CHECK constraints, same
+  // as the other 3 CHECK constraints from the initial migration. Other
+  // ACTIVE/INACTIVE/BLOCKED transitions remain TBD.
   accountStatus String @map("account_status") @db.VarChar(30)
 
   activatedAt DateTime? @map("activated_at") @db.Timestamptz

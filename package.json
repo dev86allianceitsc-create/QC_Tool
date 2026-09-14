@@ -4,21 +4,35 @@
   "private": true,
   "description": "QC Tool - Quality Control API Testing Dashboard",
   "scripts": {
-    "dev:web": "pnpm -F web dev",
-    "build:web": "pnpm -F web build",
-    "preview:web": "pnpm -F web preview",
-    "format:web": "pnpm -F web format",
-    "typecheck:web": "pnpm -F web typecheck"
+    "dev": "concurrently -n web,api -c blue,green \"pnpm:dev:web\" \"pnpm:dev:api\"",
+    "dev:web": "pnpm -F figma-make-app dev",
+    "dev:api": "pnpm -F api dev",
+    "build:web": "pnpm -F figma-make-app build",
+    "build:api": "pnpm -F api build",
+    "preview:web": "pnpm -F figma-make-app preview",
+    "format:web": "pnpm -F figma-make-app format",
+    "format:api": "pnpm -F api format",
+    "typecheck:web": "pnpm -F figma-make-app typecheck",
+    "typecheck:api": "pnpm -F api typecheck",
+    "db:start": "node scripts/pg-dev.mjs start",
+    "db:stop": "node scripts/pg-dev.mjs stop",
+    "db:verify": "node scripts/verify-schema.mjs"
   },
   "devDependencies": {
+    "concurrently": "^9.1.2",
     "dotenv": "^17.4.2",
-    "prisma": "7.10.0"
+    "embedded-postgres": "17.10.0-beta.17",
+    "pg": "^8.16.0",
+    "prisma": "7.10.0",
+    "typescript": "^5.7.0"
   },
   "dependencies": {
+    "@prisma/adapter-pg": "7.10.0",
     "@prisma/client": "7.10.0"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
+      "@embedded-postgres/windows-x64",
       "@prisma/client",
       "@prisma/engines",
       "prisma"
