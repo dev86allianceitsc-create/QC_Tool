@@ -243,9 +243,12 @@ async function main() {
       findCheck("ck_users_system_role")?.definition,
     );
     check(
-      "NO users.account_status CHECK exists",
-      !checks.some((c) => c.table_name === "users" && /account_status/.test(c.definition)),
-      JSON.stringify(checks.filter((c) => c.table_name === "users").map((c) => c.conname)),
+      "ck_users_account_status CHECK exists (INVITED, ACTIVE, INACTIVE, BLOCKED)",
+      !!findCheck("ck_users_account_status") &&
+        ["INVITED", "ACTIVE", "INACTIVE", "BLOCKED"].every((v) =>
+          findCheck("ck_users_account_status").definition.includes(v),
+        ),
+      findCheck("ck_users_account_status")?.definition,
     );
     check(
       "ck_user_sessions_expires_at CHECK exists (expires_at > created_at)",
@@ -260,11 +263,14 @@ async function main() {
       findCheck("ck_user_sessions_revoked_at")?.definition,
     );
     check(
-      "No unapproved CHECK constraints beyond the 3 named ones",
+      "No unapproved CHECK constraints beyond the 4 named ones",
       checks.every((c) =>
-        ["ck_users_system_role", "ck_user_sessions_expires_at", "ck_user_sessions_revoked_at"].includes(
-          c.conname,
-        ),
+        [
+          "ck_users_system_role",
+          "ck_users_account_status",
+          "ck_user_sessions_expires_at",
+          "ck_user_sessions_revoked_at",
+        ].includes(c.conname),
       ),
       JSON.stringify(checks.map((c) => c.conname)),
     );
