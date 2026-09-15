@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import type { User, UserSession } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { BusinessException } from "../../common/exceptions/business.exception";
@@ -168,6 +169,67 @@ describe("AuthService.loginWithGoogle", () => {
 
       const err = await service.loginWithGoogle("code").catch((e) => e);
       expect(err.getResponse()).toMatchObject({ errorCode: "INVALID_SYSTEM_ROLE" });
+    });
+
+    it("does not query for duplicates or touch the stored email when Google's email matches the stored email (FR-USR-001-21)", async () => {
+      googleIdentityService.exchange.mockResolvedValue(identity);
+      const user = makeUser({ accountStatus: "ACTIVE", googleSubjectId: "google-sub-1", email: "user@example.com" });
+      prisma.user.findUnique.mockResolvedValueOnce(user);
+      sessionsService.create.mockResolvedValue(makeSession());
+
+      await service.loginWithGoogle("code");
+
+      expect(prisma.user.findUnique).toHaveBeenCalledTimes(1);
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it("re-syncs the stored email when Google reports a different, verified email not used by another account (FR-USR-001-21 / SF-07)", async () => {
+      googleIdentityService.exchange.mockResolvedValue({ ...identity, email: "New.Email@Example.com" });
+      const user = makeUser({ accountStatus: "ACTIVE", googleSubjectId: "google-sub-1", email: "old@example.com" });
+      prisma.user.findUnique.mockResolvedValueOnce(user).mockResolvedValueOnce(null);
+      prisma.user.update.mockImplementation(({ data }) => Promise.resolve({ ...user, ...data }));
+      sessionsService.create.mockResolvedValue(makeSession());
+
+      const result = await service.loginWithGoogle("code");
+
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { userId: user.userId },
+        data: { email: "new.email@example.com" },
+      });
+      expect(result.user.email).toBe("new.email@example.com");
+      expect(sessionsService.create).toHaveBeenCalledWith(user.userId);
+    });
+
+    it("rejects with IDENTITY_LINK_CONFLICT when the new verified email already belongs to a different account — no merge, no session (FR-USR-001-22 / SF-07)", async () => {
+      googleIdentityService.exchange.mockResolvedValue({ ...identity, email: "taken@example.com" });
+      const user = makeUser({ accountStatus: "ACTIVE", googleSubjectId: "google-sub-1", email: "old@example.com" });
+      const otherUser = makeUser({ userId: "44444444-4444-4444-4444-444444444444", email: "taken@example.com" });
+      prisma.user.findUnique.mockResolvedValueOnce(user).mockResolvedValueOnce(otherUser);
+
+      const err = await service.loginWithGoogle("code").catch((e) => e);
+
+      expect(err).toBeInstanceOf(BusinessException);
+      expect(err.getResponse()).toMatchObject({ errorCode: "IDENTITY_LINK_CONFLICT" });
+      expect(prisma.user.update).not.toHaveBeenCalled();
+      expect(sessionsService.create).not.toHaveBeenCalled();
+    });
+
+    it("maps a concurrent duplicate-email race (P2002) during email sync to IDENTITY_LINK_CONFLICT", async () => {
+      googleIdentityService.exchange.mockResolvedValue({ ...identity, email: "new@example.com" });
+      const user = makeUser({ accountStatus: "ACTIVE", googleSubjectId: "google-sub-1", email: "old@example.com" });
+      prisma.user.findUnique.mockResolvedValueOnce(user).mockResolvedValueOnce(null);
+      prisma.user.update.mockRejectedValue(
+        new Prisma.PrismaClientKnownRequestError("Unique constraint failed on the fields: (`email`)", {
+          code: "P2002",
+          clientVersion: "7.10.0",
+        }),
+      );
+
+      const err = await service.loginWithGoogle("code").catch((e) => e);
+
+      expect(err).toBeInstanceOf(BusinessException);
+      expect(err.getResponse()).toMatchObject({ errorCode: "IDENTITY_LINK_CONFLICT" });
+      expect(sessionsService.create).not.toHaveBeenCalled();
     });
   });
 });

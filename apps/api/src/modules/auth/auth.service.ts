@@ -1,7 +1,9 @@
 import { HttpStatus, Injectable } from "@nestjs/common";
+import { Prisma } from "@prisma/client";
 import type { User, UserSession } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { BusinessException } from "../../common/exceptions/business.exception";
+import { normalizeEmail } from "../../common/utils/email";
 import { computeExpiresAt, SessionsService } from "../sessions/sessions.service";
 import { GoogleIdentityService } from "./google-identity.service";
 
@@ -18,10 +20,6 @@ export interface GoogleLoginResult {
 }
 
 const VALID_SYSTEM_ROLES = new Set(["ADMIN", "USER"]);
-
-function normalizeEmail(email: string): string {
-  return email.trim().toLowerCase();
-}
 
 @Injectable()
 export class AuthService {
@@ -47,8 +45,8 @@ export class AuthService {
       ({ user: activeUser, session } = await this.linkFirstLogin(user, identity.sub));
     } else {
       this.assertAccountUsable(user);
-      activeUser = user;
-      session = await this.sessionsService.create(user.userId);
+      activeUser = await this.syncEmailIfChanged(user, normalizedEmail);
+      session = await this.sessionsService.create(activeUser.userId);
     }
 
     this.assertValidSystemRole(activeUser);
@@ -114,6 +112,31 @@ export class AuthService {
       });
       return { user: updatedUser, session };
     });
+  }
+
+  // FR-USR-001-21 / BR-USR-001-18 / SF-07: on a returning login with a
+  // matching Google Subject ID, re-sync the stored email if Google now
+  // reports a different (already-verified) address. Per FR-USR-001-22 /
+  // SF-07, if that email already belongs to a different account, the whole
+  // login is rejected — no auto-merge, no relink, no session created.
+  private async syncEmailIfChanged(user: User, normalizedEmail: string): Promise<User> {
+    if (user.email === normalizedEmail) {
+      return user;
+    }
+
+    const conflictingUser = await this.prisma.user.findUnique({ where: { email: normalizedEmail } });
+    if (conflictingUser && conflictingUser.userId !== user.userId) {
+      throw new BusinessException(HttpStatus.CONFLICT, "IDENTITY_LINK_CONFLICT", "Email is already used by a different account");
+    }
+
+    try {
+      return await this.prisma.user.update({ where: { userId: user.userId }, data: { email: normalizedEmail } });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+        throw new BusinessException(HttpStatus.CONFLICT, "IDENTITY_LINK_CONFLICT", "Email is already used by a different account");
+      }
+      throw error;
+    }
   }
 
   private assertAccountUsable(user: User): void {
