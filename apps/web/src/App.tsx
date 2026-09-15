@@ -1,30 +1,19 @@
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "./features/auth/useAuth";
 import { ERROR_MESSAGES, type LoginErrorType } from "./features/auth/auth.types";
+import { Header } from "./components/Header";
+import { ProjectListScreen } from "./features/projects/ProjectListScreen";
+import { ProjectDetailScreen } from "./features/projects/ProjectDetailScreen";
+import { MembersScreen } from "./features/projects/MembersScreen";
+import type { Member, Project, Role } from "./features/projects/projects.types";
 
 // Post-authentication navigation only. Sign-in sub-states ("signin",
 // "signin-loading", "signin-error") now live in useAuth's AuthScreen instead.
 type Screen = "dashboard" | "no-project" | "project-detail" | "members" | "access-denied";
 
-type Role = "ADMIN" | "USER";
-type MemberStatus = "ACTIVE" | "INVITED" | "INACTIVE" | "BLOCKED";
-
 interface User {
   email: string;
   role: Role;
-}
-
-interface Project {
-  id: string;
-  name: string;
-}
-
-interface Member {
-  id: string;
-  email: string;
-  role: Role;
-  status: MemberStatus;
-  addedAt: string;
 }
 
 // Prototype-only demo identity — NOT an authenticated user. Used solely to
@@ -35,11 +24,11 @@ const DEMO_USER: User = {
   role: "ADMIN",
 };
 
-const PROJECTS: Project[] = [
-  { id: "p1", name: "Project A" },
-  { id: "p2", name: "Project B" },
-  { id: "p3", name: "Project C" },
-  { id: "p4", name: "Project D" },
+const INITIAL_PROJECTS: Project[] = [
+  { id: "p1", name: "Project A", description: "First demo project.", status: "ACTIVE", deletedAt: null },
+  { id: "p2", name: "Project B", description: "Second demo project.", status: "ACTIVE", deletedAt: null },
+  { id: "p3", name: "Project C", description: "Currently inactive demo project.", status: "INACTIVE", deletedAt: null },
+  { id: "p4", name: "Project D", description: "Fourth demo project.", status: "ACTIVE", deletedAt: null },
 ];
 
 const INITIAL_MEMBERS: Member[] = [
@@ -127,25 +116,6 @@ function SignInScreen({
   );
 }
 
-function Header({ user, onLogout, title, onShowSessionExpired }: { user: User; onLogout: () => void; title: string; onShowSessionExpired?: () => void }) {
-  return (
-    <div style={{ height: "60px", borderBottom: "1px solid #ccc", padding: "0 20px", display: "flex", alignItems: "center", justifyContent: "space-between", backgroundColor: "#f9f9f9" }}>
-      <h2 style={{ margin: 0, fontSize: "18px" }}>{title}</h2>
-      <div style={{ display: "flex", gap: "20px", alignItems: "center" }}>
-        <span>{user.email} ({user.role})</span>
-        {onShowSessionExpired && (
-          <button onClick={onShowSessionExpired} style={{ fontSize: "10px", padding: "4px 8px", border: "1px solid #ccc", backgroundColor: "#fff", cursor: "pointer", color: "#666" }}>
-            [Test Session Expired]
-          </button>
-        )}
-        <button onClick={onLogout} style={{ padding: "8px 12px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
-          Logout
-        </button>
-      </div>
-    </div>
-  );
-}
-
 function NoProjectScreen({ user, onLogout, onRefresh, onShowSessionExpired }: { user: User; onLogout: () => void; onRefresh: () => void; onShowSessionExpired?: () => void }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh", backgroundColor: "#fff" }}>
@@ -162,247 +132,6 @@ function NoProjectScreen({ user, onLogout, onRefresh, onShowSessionExpired }: { 
           </div>
         </div>
       </div>
-    </div>
-  );
-}
-
-function ProjectListScreen({ user, projects, onSelectProject, onLogout, onShowSessionExpired }: { user: User; projects: Project[]; onSelectProject: (id: string) => void; onLogout: () => void; onShowSessionExpired?: () => void }) {
-  return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100vh", backgroundColor: "#fff" }}>
-      <Header user={user} onLogout={onLogout} title="Projects" onShowSessionExpired={onShowSessionExpired} />
-      <div style={{ flex: 1, padding: "20px", overflow: "auto" }}>
-        <h2>Projects</h2>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead>
-            <tr style={{ borderBottom: "2px solid #000" }}>
-              <th style={{ textAlign: "left", padding: "10px", borderBottom: "1px solid #ccc" }}>Name</th>
-              <th style={{ padding: "10px", borderBottom: "1px solid #ccc", textAlign: "center" }}>Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            {projects.map((p) => (
-              <tr key={p.id} style={{ borderBottom: "1px solid #ccc" }}>
-                <td style={{ padding: "10px" }}>{p.name}</td>
-                <td style={{ padding: "10px", textAlign: "center" }}>
-                  <button onClick={() => onSelectProject(p.id)} style={{ padding: "6px 12px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
-                    Open
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
-function ProjectDetailScreen({ user, project, onBack, onLogout, onMembersClick, onShowSessionExpired }: { user: User; project: Project; onBack: () => void; onLogout: () => void; onMembersClick: () => void; onShowSessionExpired?: () => void }) {
-  const [activeTab, setActiveTab] = useState<"overview" | "members">("overview");
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100vh", backgroundColor: "#fff" }}>
-      <Header user={user} onLogout={onLogout} title={project.name} onShowSessionExpired={onShowSessionExpired} />
-      <div style={{ padding: "10px 20px", borderBottom: "1px solid #ccc" }}>
-        <button onClick={onBack} style={{ padding: "6px 12px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer", marginRight: "10px" }}>
-          ← Back
-        </button>
-      </div>
-      <div style={{ display: "flex", borderBottom: "1px solid #ccc" }}>
-        {["overview", "members"].map((tab) => (
-          <button
-            key={tab}
-            onClick={() => {
-              setActiveTab(tab as "overview" | "members");
-              if (tab === "members") onMembersClick();
-            }}
-            style={{
-              padding: "10px 20px",
-              border: "none",
-              borderBottom: activeTab === tab ? "2px solid #000" : "none",
-              backgroundColor: "#fff",
-              cursor: "pointer",
-              fontWeight: activeTab === tab ? "bold" : "normal",
-            }}
-          >
-            {tab.charAt(0).toUpperCase() + tab.slice(1)}
-          </button>
-        ))}
-      </div>
-      <div style={{ flex: 1, padding: "20px", overflow: "auto" }}>
-        {activeTab === "overview" && (
-          <div style={{ border: "1px solid #ccc", padding: "20px" }}>
-            <h3>{project.name}</h3>
-            <p style={{ color: "#666", fontSize: "12px" }}>[Project details to be confirmed]</p>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function MembersScreen({ user, members, onBack, onLogout, onAddMember, onEditMember, onCancelMember, onShowSessionExpired }: { user: User; members: Member[]; onBack: () => void; onLogout: () => void; onAddMember: (email: string) => void; onEditMember: (id: string, email: string) => void; onCancelMember: (id: string) => void; onShowSessionExpired?: () => void }) {
-  const [search, setSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"ALL" | MemberStatus>("ALL");
-  const [showAddModal, setShowAddModal] = useState(false);
-  const [addModalState, setAddModalState] = useState<"default" | "loading" | "success" | "invalid" | "duplicate" | "error">("default");
-  const [showEditModal, setShowEditModal] = useState<string | null>(null);
-  const [editEmail, setEditEmail] = useState("");
-  const [showCancelModal, setShowCancelModal] = useState<string | null>(null);
-  const [newEmail, setNewEmail] = useState("");
-
-  const filtered = members.filter((m) => {
-    const matchSearch = m.email.toLowerCase().includes(search.toLowerCase());
-    const matchStatus = statusFilter === "ALL" || m.status === statusFilter;
-    return matchSearch && matchStatus;
-  });
-
-  const isValidEmail = (email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-
-  const handleAddMember = () => {
-    if (!newEmail || !isValidEmail(newEmail)) {
-      setAddModalState("invalid");
-      return;
-    }
-    if (members.some((m) => m.email.toLowerCase() === newEmail.toLowerCase())) {
-      setAddModalState("duplicate");
-      return;
-    }
-    setAddModalState("loading");
-    setTimeout(() => {
-      onAddMember(newEmail);
-      setAddModalState("success");
-    }, 800);
-  };
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100vh", backgroundColor: "#fff" }}>
-      <Header user={user} onLogout={onLogout} title="Project Members" onShowSessionExpired={onShowSessionExpired} />
-      <div style={{ padding: "10px 20px", borderBottom: "1px solid #ccc" }}>
-        <button onClick={onBack} style={{ padding: "6px 12px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer", marginRight: "10px" }}>
-          ← Back
-        </button>
-      </div>
-      <div style={{ padding: "20px", borderBottom: "1px solid #ccc", display: "flex", gap: "10px", alignItems: "center" }}>
-        <input type="text" placeholder="Search by email..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ padding: "8px", border: "1px solid #ccc", width: "250px" }} />
-        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as "ALL" | MemberStatus)} style={{ padding: "8px", border: "1px solid #ccc" }}>
-          <option value="ALL">All Statuses</option>
-          <option value="ACTIVE">ACTIVE</option>
-          <option value="INVITED">INVITED</option>
-          <option value="INACTIVE">INACTIVE</option>
-          <option value="BLOCKED">BLOCKED</option>
-        </select>
-        <button onClick={() => { setShowAddModal(true); setAddModalState("default"); setNewEmail(""); }} style={{ padding: "8px 12px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer", marginLeft: "auto" }}>
-          + Add Member
-        </button>
-      </div>
-      <div style={{ flex: 1, padding: "20px", overflow: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead>
-            <tr style={{ borderBottom: "2px solid #000" }}>
-              <th style={{ textAlign: "left", padding: "10px", borderBottom: "1px solid #ccc" }}>Email</th>
-              <th style={{ textAlign: "left", padding: "10px", borderBottom: "1px solid #ccc" }}>Role</th>
-              <th style={{ textAlign: "left", padding: "10px", borderBottom: "1px solid #ccc" }}>Status</th>
-              <th style={{ padding: "10px", borderBottom: "1px solid #ccc" }}>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map((m) => (
-              <tr key={m.id} style={{ borderBottom: "1px solid #ccc" }}>
-                <td style={{ padding: "10px" }}>{m.email}</td>
-                <td style={{ padding: "10px" }}>{m.role}</td>
-                <td style={{ padding: "10px" }}>{m.status}</td>
-                <td style={{ padding: "10px", textAlign: "center" }}>
-                  {m.status === "INVITED" && (
-                    <>
-                      <button onClick={() => { setShowEditModal(m.id); setEditEmail(m.email); }} style={{ padding: "4px 8px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer", marginRight: "5px" }}>
-                        Edit
-                      </button>
-                      <button onClick={() => setShowCancelModal(m.id)} style={{ padding: "4px 8px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
-                        Cancel
-                      </button>
-                    </>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      {showAddModal && (
-        <div style={{ position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", backgroundColor: "rgba(0,0,0,0.5)" }}>
-          <div style={{ backgroundColor: "#fff", border: "1px solid #000", padding: "20px", width: "400px" }}>
-            <h3>Add Member</h3>
-            {addModalState === "success" ? (
-              <div style={{ textAlign: "center", padding: "20px 0" }}>
-                <p>Member added successfully</p>
-                <button onClick={() => { setShowAddModal(false); setAddModalState("default"); setNewEmail(""); }} style={{ padding: "10px 20px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
-                  Done
-                </button>
-              </div>
-            ) : (
-              <>
-                <label style={{ display: "block", marginBottom: "10px" }}>
-                  <span style={{ display: "block", marginBottom: "5px", fontWeight: "bold" }}>Google Email *</span>
-                  <input type="email" value={newEmail} onChange={(e) => { setNewEmail(e.target.value); setAddModalState("default"); }} placeholder="user@example.com" style={{ width: "100%", padding: "8px", border: "1px solid #ccc", boxSizing: "border-box" }} />
-                </label>
-                {addModalState === "invalid" && <p style={{ color: "red", fontSize: "12px" }}>Invalid email address</p>}
-                {addModalState === "duplicate" && <p style={{ color: "red", fontSize: "12px" }}>User already belongs to this project</p>}
-                {addModalState === "loading" && <p style={{ fontSize: "12px" }}>Adding member...</p>}
-                <div style={{ display: "flex", gap: "10px", marginTop: "15px" }}>
-                  <button onClick={() => setShowAddModal(false)} style={{ flex: 1, padding: "10px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
-                    Cancel
-                  </button>
-                  <button onClick={handleAddMember} disabled={addModalState === "loading"} style={{ flex: 1, padding: "10px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer", opacity: addModalState === "loading" ? 0.6 : 1 }}>
-                    Add Member
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-      )}
-
-      {showEditModal && (
-        <div style={{ position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", backgroundColor: "rgba(0,0,0,0.5)" }}>
-          <div style={{ backgroundColor: "#fff", border: "1px solid #000", padding: "20px", width: "400px" }}>
-            <h3>Edit Invitation</h3>
-            <label style={{ display: "block", marginBottom: "10px" }}>
-              <span style={{ display: "block", marginBottom: "5px", fontWeight: "bold" }}>Google Email</span>
-              <input type="email" value={editEmail} onChange={(e) => setEditEmail(e.target.value)} style={{ width: "100%", padding: "8px", border: "1px solid #ccc", boxSizing: "border-box" }} />
-            </label>
-            <div style={{ display: "flex", gap: "10px" }}>
-              <button onClick={() => setShowEditModal(null)} style={{ flex: 1, padding: "10px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
-                Cancel
-              </button>
-              <button onClick={() => { onEditMember(showEditModal, editEmail); setShowEditModal(null); }} style={{ flex: 1, padding: "10px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
-                Save
-              </button>
-            </div>
-            <button onClick={() => { setShowCancelModal(showEditModal); setShowEditModal(null); }} style={{ width: "100%", padding: "8px", marginTop: "10px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer", color: "red" }}>
-              Cancel Invitation
-            </button>
-          </div>
-        </div>
-      )}
-
-      {showCancelModal && (
-        <div style={{ position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", backgroundColor: "rgba(0,0,0,0.5)" }}>
-          <div style={{ backgroundColor: "#fff", border: "1px solid #000", padding: "20px", width: "400px", textAlign: "center" }}>
-            <h3>Cancel Invitation</h3>
-            <p>Are you sure you want to cancel this invitation?</p>
-            <div style={{ display: "flex", gap: "10px" }}>
-              <button onClick={() => setShowCancelModal(null)} style={{ flex: 1, padding: "10px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
-                Keep
-              </button>
-              <button onClick={() => { onCancelMember(showCancelModal); setShowCancelModal(null); }} style={{ flex: 1, padding: "10px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
-                Confirm
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -439,6 +168,8 @@ export default function App() {
   const auth = useAuth();
   const [screen, setScreen] = useState<Screen>("dashboard");
   const [members, setMembers] = useState<Member[]>(INITIAL_MEMBERS);
+  const [projects, setProjects] = useState<Project[]>(INITIAL_PROJECTS);
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
 
   // Demo-mode bypass state (dev only) — completely independent of `auth` so
   // demo controls can never be mistaken for evidence of real authentication.
@@ -487,6 +218,33 @@ export default function App() {
     setMembers(members.filter((m) => m.id !== id));
   }
 
+  function handleRemoveMember(id: string) {
+    setMembers(members.filter((m) => m.id !== id));
+  }
+
+  function handleCreateProject(name: string, description: string) {
+    const newProject: Project = {
+      id: `p${Date.now()}`,
+      name,
+      description,
+      status: "ACTIVE",
+      deletedAt: null,
+    };
+    setProjects([...projects, newProject]);
+  }
+
+  function handleEditProject(id: string, name: string, description: string) {
+    setProjects(projects.map((p) => (p.id === id ? { ...p, name, description } : p)));
+  }
+
+  function handleToggleProjectStatus(id: string) {
+    setProjects(projects.map((p) => (p.id === id ? { ...p, status: p.status === "ACTIVE" ? "INACTIVE" : "ACTIVE" } : p)));
+  }
+
+  function handleDeleteProject(id: string) {
+    setProjects(projects.map((p) => (p.id === id ? { ...p, deletedAt: new Date().toISOString() } : p)));
+  }
+
   if (!activeUser) {
     const showingDemoLoading = demoPhase === "loading";
     const showingDemoError = demoPhase === "error" && demoError;
@@ -518,16 +276,51 @@ export default function App() {
   }
 
   const onShowSessionExpired = import.meta.env.DEV ? auth.debugShowSessionExpired : undefined;
+  const selectedProject = projects.find((p) => p.id === selectedProjectId) ?? projects[0];
 
   return (
     <div style={{ height: "100vh", overflow: "hidden" }}>
-      {screen === "dashboard" && <ProjectListScreen user={activeUser} projects={PROJECTS} onSelectProject={() => setScreen("project-detail")} onLogout={handleLogout} onShowSessionExpired={onShowSessionExpired} />}
+      {screen === "dashboard" && (
+        <ProjectListScreen
+          user={activeUser}
+          projects={projects}
+          onSelectProject={(id) => { setSelectedProjectId(id); setScreen("project-detail"); }}
+          onCreateProject={handleCreateProject}
+          onLogout={handleLogout}
+          onShowSessionExpired={onShowSessionExpired}
+        />
+      )}
 
       {screen === "no-project" && <NoProjectScreen user={activeUser} onLogout={handleLogout} onRefresh={() => {}} onShowSessionExpired={onShowSessionExpired} />}
 
-      {screen === "project-detail" && <ProjectDetailScreen user={activeUser} project={PROJECTS[0]} onBack={() => setScreen("dashboard")} onLogout={handleLogout} onMembersClick={() => setScreen("members")} onShowSessionExpired={onShowSessionExpired} />}
+      {screen === "project-detail" && selectedProject && (
+        <ProjectDetailScreen
+          user={activeUser}
+          project={selectedProject}
+          onBack={() => setScreen("dashboard")}
+          onLogout={handleLogout}
+          onMembersClick={() => setScreen("members")}
+          onEditProject={handleEditProject}
+          onToggleStatus={handleToggleProjectStatus}
+          onDeleteProject={handleDeleteProject}
+          onShowSessionExpired={onShowSessionExpired}
+        />
+      )}
 
-      {screen === "members" && <MembersScreen user={activeUser} members={members} onBack={() => setScreen("project-detail")} onLogout={handleLogout} onAddMember={handleAddMember} onEditMember={handleEditMember} onCancelMember={handleCancelMember} onShowSessionExpired={onShowSessionExpired} />}
+      {screen === "members" && (
+        <MembersScreen
+          user={activeUser}
+          projectName={selectedProject?.name ?? ""}
+          members={members}
+          onBack={() => setScreen("project-detail")}
+          onLogout={handleLogout}
+          onAddMember={handleAddMember}
+          onEditMember={handleEditMember}
+          onCancelMember={handleCancelMember}
+          onRemoveMember={handleRemoveMember}
+          onShowSessionExpired={onShowSessionExpired}
+        />
+      )}
 
       {screen === "access-denied" && <AccessDeniedScreen onBack={() => setScreen("dashboard")} />}
 
