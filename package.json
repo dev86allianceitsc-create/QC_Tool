@@ -16,7 +16,8 @@
     "typecheck:api": "pnpm -F api typecheck",
     "db:start": "node scripts/pg-dev.mjs start",
     "db:stop": "node scripts/pg-dev.mjs stop",
-    "db:verify": "node scripts/verify-schema.mjs"
+    "db:verify": "node scripts/verify-schema.mjs",
+    "db:seed": "node prisma/seed.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",
