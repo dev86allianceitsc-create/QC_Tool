@@ -49,8 +49,11 @@ async function ensureProject(prisma, { projectName, note }) {
     return existing;
   }
 
-  const created = await prisma.project.create({ data: { projectName, note } });
-  console.log(`[seed] created project "${created.projectName}" (projectId=${created.projectId})`);
+  // projectStatus: Initial Business Value "ACTIVE" (Database AnD Section 4
+  // Notes), set explicitly here — not a SQL DEFAULT (Database Standard v2.0
+  // Section 14), same pattern as accountStatus above.
+  const created = await prisma.project.create({ data: { projectName, projectStatus: "ACTIVE", note } });
+  console.log(`[seed] created project "${created.projectName}" (projectId=${created.projectId}, projectStatus=${created.projectStatus})`);
   return created;
 }
 

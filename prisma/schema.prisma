@@ -2,9 +2,12 @@
 // Source of truth: document/database/Database_AnD.docx (post VARCHAR Physical
 // Design Decision, approved 2026-09-11) and document/database/Database_Standard_v2.0.docx.
 //
-// Scope: users, user_sessions, projects, project_memberships ONLY.
-// audit_logs is intentionally excluded — target_id physical type is still TBD,
-// generic audit target modeling is unresolved, and audit policy is TBD.
+// Database Phase C — Project Management & Audit Log implementation.
+// Source of truth: document/database/AnD_Database_Project_Audit.docx
+// (status: IMPLEMENTATION READY - reviewed and frozen for current scope) and
+// document/database/Database_Standard_v2.0.docx.
+//
+// Scope: users, user_sessions, projects, project_memberships, audit_logs.
 
 datasource db {
   provider = "postgresql"
@@ -37,6 +40,7 @@ model User {
 
   sessions    UserSession[]
   memberships ProjectMembership[]
+  auditLogs   AuditLog[]
 
   @@map("users")
 }
@@ -70,16 +74,29 @@ model UserSession {
 model Project {
   projectId String @id @default(uuid()) @map("project_id") @db.Uuid
 
-  // UNIQUE is still TBD in the AnD (PRJ team confirmation pending) —
-  // intentionally not applied here.
+  // Confirmed NOT UNIQUE — Database AnD (Project/Audit) Section 4 / REQ-PRJ-001:
+  // project names may duplicate.
   projectName String @map("project_name") @db.VarChar(255)
 
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
-  note      String?  @db.Text
+  description String? @db.Text
+
+  // NOT NULL, no SQL DEFAULT: "Initial: ACTIVE" is an Initial Business Value
+  // (Database AnD Section 4 Notes: "not assumed SQL default"; Database
+  // Standard v2.0 Section 14), set explicitly by application code on create —
+  // same pattern already used for users.account_status.
+  projectStatus String @map("project_status") @db.VarChar(20)
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+  // Soft delete. NULL = not deleted. No deleted_by column (Confirmed —
+  // Database AnD Section 13: delete actor is traced through audit_logs).
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz
+  note      String?   @db.Text
 
   memberships ProjectMembership[]
+  auditLogs   AuditLog[]
 
+  @@index([projectStatus, deletedAt], map: "idx_projects_status_deleted")
   @@map("projects")
 }
 
@@ -96,8 +113,55 @@ model ProjectMembership {
   note      String?  @db.Text
 
   @@id([userId, projectId], map: "pk_project_memberships")
+  @@index([projectId], map: "idx_project_memberships_project_id")
   @@map("project_memberships")
 }
 
-// audit_logs is DEFERRED — not modeled in this schema (see Database AnD
-// Section 9 Revision Log and Section 4.4).
+// audit_logs — Database AnD (Project/Audit) Section 7/8/9. Append-only at
+// application policy (no normal application Update/Delete); never stores
+// password, secret or full token (Database Standard v2.0 Section 22).
+model AuditLog {
+  auditId String @id(map: "pk_audit_logs") @default(uuid()) @map("audit_id") @db.Uuid
+
+  // No DB CHECK for event_type in this migration — taxonomy not yet frozen
+  // (Database AnD Section 7/13, explicit instruction).
+  eventType String @map("event_type") @db.VarChar(50)
+  // CHECK ck_audit_logs_result: SUCCESS/FAILURE/DENIED.
+  result    String @db.VarChar(20)
+
+  occurredAt DateTime @default(now()) @map("occurred_at") @db.Timestamptz
+
+  // Nullable, ON DELETE SET NULL — audit history survives actor deletion.
+  // actorDisplay is an intentional historical/searchable snapshot, kept even
+  // if actorUserId is later nulled out.
+  actorUserId  String? @map("actor_user_id") @db.Uuid
+  actor        User?   @relation(fields: [actorUserId], references: [userId], onDelete: SetNull, map: "fk_audit_logs_actor_user_id")
+  actorDisplay String? @map("actor_display") @db.VarChar(320)
+
+  // Generic target: target_type + target_id, no polymorphic FK (Confirmed —
+  // Database AnD Section 3/7).
+  targetType    String? @map("target_type") @db.VarChar(50)
+  targetId      String? @map("target_id") @db.VarChar(255)
+  targetDisplay String? @map("target_display") @db.VarChar(320)
+
+  // Nullable, ON DELETE SET NULL — audit history survives project deletion.
+  projectId String?  @map("project_id") @db.Uuid
+  project   Project? @relation(fields: [projectId], references: [projectId], onDelete: SetNull, map: "fk_audit_logs_project_id")
+
+  // PostgreSQL JSONB per Database AnD Section 7/9; sanitized before
+  // persistence, never contains secrets/tokens/passwords.
+  beforeData Json? @map("before_data") @db.JsonB
+  afterData  Json? @map("after_data") @db.JsonB
+
+  requestId String? @map("request_id") @db.VarChar(100)
+  detail    String? @db.Text
+  note      String? @db.Text
+
+  // No index on `result` (explicit instruction). No automatic purge/retention
+  // in this scope (Database AnD Section 9/13 — TBD, non-blocking).
+  @@index([occurredAt(sort: Desc)], map: "idx_audit_logs_occurred_at")
+  @@index([projectId, occurredAt(sort: Desc)], map: "idx_audit_logs_project_time")
+  @@index([actorUserId, occurredAt(sort: Desc)], map: "idx_audit_logs_actor_time")
+  @@index([eventType, occurredAt(sort: Desc)], map: "idx_audit_logs_event_time")
+  @@map("audit_logs")
+}
