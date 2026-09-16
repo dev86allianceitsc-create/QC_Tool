@@ -1,6 +1,13 @@
 import { Module } from "@nestjs/common";
+import { AuditModule } from "../audit/audit.module";
+import { ProjectMembersController } from "./project-members.controller";
+import { ProjectMembersService } from "./project-members.service";
+import { ProjectsController } from "./projects.controller";
+import { ProjectsService } from "./projects.service";
 
-// Empty shell — project membership business logic (add/edit/cancel member,
-// permission matrix, etc.) is out of scope for this milestone.
-@Module({})
+@Module({
+  imports: [AuditModule],
+  controllers: [ProjectsController, ProjectMembersController],
+  providers: [ProjectsService, ProjectMembersService],
+})
 export class ProjectsModule {}

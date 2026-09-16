@@ -7,6 +7,7 @@ import { AuthModule } from "./modules/auth/auth.module";
 import { UsersModule } from "./modules/users/users.module";
 import { SessionsModule } from "./modules/sessions/sessions.module";
 import { ProjectsModule } from "./modules/projects/projects.module";
+import { AuditModule } from "./modules/audit/audit.module";
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { ProjectsModule } from "./modules/projects/projects.module";
     AuthModule,
     UsersModule,
     SessionsModule,
+    AuditModule,
     ProjectsModule,
   ],
   controllers: [AppController],
