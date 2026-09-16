@@ -1,74 +1,118 @@
 import { useState } from "react";
 import { Header } from "../../components/Header";
+import { ApiError } from "../../services/api-client";
+import { updateInvitedUserEmail } from "../users/users.api";
 import { ConfirmDialog } from "./ConfirmDialog";
-import type { Member, MemberStatus, Role } from "./projects.types";
+import type { MemberStatus, Role } from "./projects.types";
+import { useProjectMembers } from "./useProjectMembers";
 
 type AddModalState = "default" | "loading" | "success" | "invalid" | "duplicate" | "blocked" | "error";
+type EditModalState = "default" | "loading" | "invalid" | "not-invited" | "duplicate" | "error";
 
-// Moved from App.tsx and extended: Add Member button + row-level Edit/Cancel
-// Invitation actions are ADMIN-only now, and a new "Remove from Project"
-// action (also ADMIN-only) is added for non-INVITED rows, per PRJ-002/PRJ-003.
-// Existing Add Member / Edit Invitation / Cancel Invitation modal behavior is
-// preserved unchanged; only the "error"/"blocked" feedback states are new.
+// Add Member / Edit Invitation / Remove from Project are ADMIN-only, per
+// PRJ-002/PRJ-003. Cancel Invitation has no sanctioned backend endpoint, so
+// INVITED rows use the same "Remove from Project" action as every other row.
 export function MembersScreen({
   user,
+  projectId,
   projectName,
-  members,
+  accessToken,
   onBack,
   onLogout,
-  onAddMember,
-  onEditMember,
-  onCancelMember,
-  onRemoveMember,
   onShowSessionExpired,
+  onSessionExpired,
+  onAccessDenied,
 }: {
   user: { email: string; role: Role };
+  projectId: string;
   projectName: string;
-  members: Member[];
+  accessToken: string | null;
   onBack: () => void;
   onLogout: () => void;
-  onAddMember: (email: string) => void;
-  onEditMember: (id: string, email: string) => void;
-  onCancelMember: (id: string) => void;
-  onRemoveMember: (id: string) => void;
   onShowSessionExpired?: () => void;
+  onSessionExpired: () => void;
+  onAccessDenied: () => void;
 }) {
   const isAdmin = user.role === "ADMIN";
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<"ALL" | MemberStatus>("ALL");
+  const { members, loading, error, refetch, addMember, removeMember } = useProjectMembers(
+    projectId,
+    accessToken,
+    search,
+    statusFilter === "ALL" ? undefined : statusFilter,
+    onSessionExpired,
+    onAccessDenied,
+  );
+
   const [showAddModal, setShowAddModal] = useState(false);
   const [addModalState, setAddModalState] = useState<AddModalState>("default");
   const [showEditModal, setShowEditModal] = useState<string | null>(null);
   const [editEmail, setEditEmail] = useState("");
-  const [showCancelModal, setShowCancelModal] = useState<string | null>(null);
+  const [editModalState, setEditModalState] = useState<EditModalState>("default");
   const [showRemoveModal, setShowRemoveModal] = useState<string | null>(null);
+  const [removeError, setRemoveError] = useState<string | null>(null);
   const [newEmail, setNewEmail] = useState("");
-
-  const filtered = members.filter((m) => {
-    const matchSearch = m.email.toLowerCase().includes(search.toLowerCase());
-    const matchStatus = statusFilter === "ALL" || m.status === statusFilter;
-    return matchSearch && matchStatus;
-  });
 
   const isValidEmail = (email: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
-  const handleAddMember = () => {
+  async function handleAddMember() {
     if (!newEmail || !isValidEmail(newEmail)) {
       setAddModalState("invalid");
       return;
     }
-    if (members.some((m) => m.email.toLowerCase() === newEmail.toLowerCase())) {
-      setAddModalState("duplicate");
+    setAddModalState("loading");
+    try {
+      await addMember(newEmail);
+      setAddModalState("success");
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409) {
+        setAddModalState("duplicate");
+      } else if (err instanceof ApiError && err.status === 422) {
+        setAddModalState("blocked");
+      } else {
+        setAddModalState("error");
+      }
+    }
+  }
+
+  async function handleSaveEditInvitation() {
+    if (!showEditModal) return;
+    if (!editEmail || !isValidEmail(editEmail)) {
+      setEditModalState("invalid");
       return;
     }
-    setAddModalState("loading");
-    setTimeout(() => {
-      onAddMember(newEmail);
-      setAddModalState("success");
-    }, 800);
-  };
+    setEditModalState("loading");
+    try {
+      if (!accessToken) return;
+      await updateInvitedUserEmail(showEditModal, editEmail, accessToken);
+      setShowEditModal(null);
+      setEditModalState("default");
+      await refetch();
+    } catch (err) {
+      if (err instanceof ApiError && err.errorCode === "ACCOUNT_NOT_INVITED") {
+        setEditModalState("not-invited");
+      } else if (err instanceof ApiError && err.errorCode === "EMAIL_ALREADY_EXISTS") {
+        setEditModalState("duplicate");
+      } else if (err instanceof ApiError && err.errorCode === "INVALID_EMAIL_FORMAT") {
+        setEditModalState("invalid");
+      } else {
+        setEditModalState("error");
+      }
+    }
+  }
 
-  const removeTarget = members.find((m) => m.id === showRemoveModal);
+  async function handleRemove() {
+    if (!showRemoveModal) return;
+    try {
+      await removeMember(showRemoveModal);
+      setShowRemoveModal(null);
+    } catch (err) {
+      setRemoveError(err instanceof ApiError ? err.message : "Unable to remove member.");
+    }
+  }
+
+  const removeTarget = members.find((m) => m.userId === showRemoveModal);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh", backgroundColor: "#fff" }}>
@@ -94,43 +138,41 @@ export function MembersScreen({
         )}
       </div>
       <div style={{ flex: 1, padding: "20px", overflow: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead>
-            <tr style={{ borderBottom: "2px solid #000" }}>
-              <th style={{ textAlign: "left", padding: "10px", borderBottom: "1px solid #ccc" }}>Email</th>
-              <th style={{ textAlign: "left", padding: "10px", borderBottom: "1px solid #ccc" }}>Role</th>
-              <th style={{ textAlign: "left", padding: "10px", borderBottom: "1px solid #ccc" }}>Status</th>
-              {isAdmin && <th style={{ padding: "10px", borderBottom: "1px solid #ccc" }}>Actions</th>}
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map((m) => (
-              <tr key={m.id} style={{ borderBottom: "1px solid #ccc" }}>
-                <td style={{ padding: "10px" }}>{m.email}</td>
-                <td style={{ padding: "10px" }}>{m.role}</td>
-                <td style={{ padding: "10px" }}>{m.status}</td>
-                {isAdmin && (
-                  <td style={{ padding: "10px", textAlign: "center" }}>
-                    {m.status === "INVITED" ? (
-                      <>
-                        <button onClick={() => { setShowEditModal(m.id); setEditEmail(m.email); }} style={{ padding: "4px 8px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer", marginRight: "5px" }}>
+        {loading && <p>Loading members...</p>}
+        {error && <p style={{ color: "red" }}>{error}</p>}
+        {!loading && !error && (
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ borderBottom: "2px solid #000" }}>
+                <th style={{ textAlign: "left", padding: "10px", borderBottom: "1px solid #ccc" }}>Email</th>
+                <th style={{ textAlign: "left", padding: "10px", borderBottom: "1px solid #ccc" }}>Role</th>
+                <th style={{ textAlign: "left", padding: "10px", borderBottom: "1px solid #ccc" }}>Status</th>
+                {isAdmin && <th style={{ padding: "10px", borderBottom: "1px solid #ccc" }}>Actions</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {members.map((m) => (
+                <tr key={m.userId} style={{ borderBottom: "1px solid #ccc" }}>
+                  <td style={{ padding: "10px" }}>{m.email}</td>
+                  <td style={{ padding: "10px" }}>{m.systemRole}</td>
+                  <td style={{ padding: "10px" }}>{m.accountStatus}</td>
+                  {isAdmin && (
+                    <td style={{ padding: "10px", textAlign: "center" }}>
+                      {m.accountStatus === "INVITED" && (
+                        <button onClick={() => { setShowEditModal(m.userId); setEditEmail(m.email); setEditModalState("default"); }} style={{ padding: "4px 8px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer", marginRight: "5px" }}>
                           Edit Invitation
                         </button>
-                        <button onClick={() => setShowCancelModal(m.id)} style={{ padding: "4px 8px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
-                          Cancel Invitation
-                        </button>
-                      </>
-                    ) : (
-                      <button onClick={() => setShowRemoveModal(m.id)} style={{ padding: "4px 8px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer", color: "red" }}>
+                      )}
+                      <button onClick={() => { setRemoveError(null); setShowRemoveModal(m.userId); }} style={{ padding: "4px 8px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer", color: "red" }}>
                         Remove from Project
                       </button>
-                    )}
-                  </td>
-                )}
-              </tr>
-            ))}
-          </tbody>
-        </table>
+                    </td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
 
       {showAddModal && (
@@ -163,19 +205,6 @@ export function MembersScreen({
                     Add Member
                   </button>
                 </div>
-                {import.meta.env.DEV && (
-                  <div style={{ marginTop: "15px", padding: "8px", border: "1px dashed #ccc", backgroundColor: "#f9f9f9" }}>
-                    <p style={{ fontSize: "11px", color: "#666", margin: "0 0 5px" }}>*** Development Only - Demo Controls ***</p>
-                    <div style={{ display: "flex", gap: "5px" }}>
-                      <button onClick={() => setAddModalState("blocked")} style={{ fontSize: "11px", padding: "5px 10px", border: "1px solid #ccc", cursor: "pointer" }}>
-                        Simulate: Blocked account
-                      </button>
-                      <button onClick={() => setAddModalState("error")} style={{ fontSize: "11px", padding: "5px 10px", border: "1px solid #ccc", cursor: "pointer" }}>
-                        Simulate: Server error
-                      </button>
-                    </div>
-                  </div>
-                )}
               </>
             )}
           </div>
@@ -188,34 +217,19 @@ export function MembersScreen({
             <h3>Edit Invitation</h3>
             <label style={{ display: "block", marginBottom: "10px" }}>
               <span style={{ display: "block", marginBottom: "5px", fontWeight: "bold" }}>Google Email</span>
-              <input type="email" value={editEmail} onChange={(e) => setEditEmail(e.target.value)} style={{ width: "100%", padding: "8px", border: "1px solid #ccc", boxSizing: "border-box" }} />
+              <input type="email" value={editEmail} onChange={(e) => { setEditEmail(e.target.value); setEditModalState("default"); }} style={{ width: "100%", padding: "8px", border: "1px solid #ccc", boxSizing: "border-box" }} />
             </label>
+            {editModalState === "invalid" && <p style={{ color: "red", fontSize: "12px" }}>Invalid email address</p>}
+            {editModalState === "not-invited" && <p style={{ color: "red", fontSize: "12px" }}>This invitation can no longer be edited</p>}
+            {editModalState === "duplicate" && <p style={{ color: "red", fontSize: "12px" }}>That email is already in use</p>}
+            {editModalState === "error" && <p style={{ color: "red", fontSize: "12px" }}>Something went wrong. Please try again.</p>}
+            {editModalState === "loading" && <p style={{ fontSize: "12px" }}>Saving...</p>}
             <div style={{ display: "flex", gap: "10px" }}>
               <button onClick={() => setShowEditModal(null)} style={{ flex: 1, padding: "10px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
                 Cancel
               </button>
-              <button onClick={() => { onEditMember(showEditModal, editEmail); setShowEditModal(null); }} style={{ flex: 1, padding: "10px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
+              <button onClick={handleSaveEditInvitation} disabled={editModalState === "loading"} style={{ flex: 1, padding: "10px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
                 Save
-              </button>
-            </div>
-            <button onClick={() => { setShowCancelModal(showEditModal); setShowEditModal(null); }} style={{ width: "100%", padding: "8px", marginTop: "10px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer", color: "red" }}>
-              Cancel Invitation
-            </button>
-          </div>
-        </div>
-      )}
-
-      {showCancelModal && (
-        <div style={{ position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", backgroundColor: "rgba(0,0,0,0.5)" }}>
-          <div style={{ backgroundColor: "#fff", border: "1px solid #000", padding: "20px", width: "400px", textAlign: "center" }}>
-            <h3>Cancel Invitation</h3>
-            <p>Are you sure you want to cancel this invitation?</p>
-            <div style={{ display: "flex", gap: "10px" }}>
-              <button onClick={() => setShowCancelModal(null)} style={{ flex: 1, padding: "10px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
-                Keep
-              </button>
-              <button onClick={() => { onCancelMember(showCancelModal); setShowCancelModal(null); }} style={{ flex: 1, padding: "10px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
-                Confirm
               </button>
             </div>
           </div>
@@ -225,10 +239,13 @@ export function MembersScreen({
       {removeTarget && (
         <ConfirmDialog
           title="Remove from Project"
-          message={`Remove ${removeTarget.email} from "${projectName}"? This only removes their access to this Project — it does not delete their account, change their System Role, or remove them from other Projects.`}
+          message={
+            `Remove ${removeTarget.email} from "${projectName}"? This only removes their access to this Project — it does not delete their account, change their System Role, or remove them from other Projects.` +
+            (removeError ? `\n${removeError}` : "")
+          }
           confirmLabel="Remove"
           danger
-          onConfirm={() => { onRemoveMember(removeTarget.id); setShowRemoveModal(null); }}
+          onConfirm={handleRemove}
           onCancel={() => setShowRemoveModal(null)}
         />
       )}

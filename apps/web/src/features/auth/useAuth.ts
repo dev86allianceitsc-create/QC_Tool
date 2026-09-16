@@ -17,7 +17,7 @@ const ERROR_CODE_TO_LOGIN_ERROR: Record<string, LoginErrorType> = {
 // Session-layer error codes (from SessionGuard, via GET /users/me). Any of
 // these means the stored accessToken is no longer usable and must be
 // dropped — never trusted, never retried as-is.
-const SESSION_ERROR_CODES = new Set(["SESSION_INVALID", "SESSION_EXPIRED", "SESSION_REVOKED"]);
+export const SESSION_ERROR_CODES = new Set(["SESSION_INVALID", "SESSION_EXPIRED", "SESSION_REVOKED"]);
 
 function mapLoginError(err: unknown): LoginErrorType {
   if (err instanceof ApiError) {
@@ -41,6 +41,17 @@ export function useAuth() {
     clearStoredAccessToken();
     setUser(null);
     setScreen("signin");
+  }, []);
+
+  // Shared by the startup-token-validation catch below and by any later
+  // feature call (Projects/Audit/Users screens) that hits a 401 with one of
+  // SESSION_ERROR_CODES — both cases mean "drop the token and show the
+  // Session Expired flow," never a silent retry.
+  const clearSessionAndFlagExpired = useCallback(() => {
+    clearStoredAccessToken();
+    tokenRef.current = null;
+    setUser(null);
+    setSessionExpired(true);
   }, []);
 
   const completeGoogleLogin = useCallback(async (authorizationCode: string) => {
@@ -88,9 +99,7 @@ export function useAuth() {
       })
       .catch((err) => {
         if (err instanceof ApiError && SESSION_ERROR_CODES.has(err.errorCode)) {
-          clearStoredAccessToken();
-          tokenRef.current = null;
-          setSessionExpired(true);
+          clearSessionAndFlagExpired();
         }
         setScreen("signin");
       });
@@ -131,6 +140,7 @@ export function useAuth() {
 
   return {
     user,
+    accessToken: tokenRef.current,
     screen,
     loginError,
     sessionExpired,
@@ -139,5 +149,9 @@ export function useAuth() {
     signOut,
     dismissSessionExpired,
     debugShowSessionExpired,
+    // For feature hooks (Projects/Audit/Users) that call the backend
+    // directly: report a 401 with a SESSION_ERROR_CODES code the same way
+    // the startup token-validation check does.
+    reportSessionExpired: clearSessionAndFlagExpired,
   };
 }

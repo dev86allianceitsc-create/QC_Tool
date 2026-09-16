@@ -1,58 +1,65 @@
 import { useState } from "react";
 import { Header } from "../../components/Header";
-import type { Project, Role } from "./projects.types";
+import { ApiError } from "../../services/api-client";
+import { useProjectsList } from "./useProjectsList";
+import type { Role } from "./projects.types";
 import { StatusBadge } from "./StatusBadge";
 
 type CreateModalState = "default" | "loading" | "success" | "invalid" | "error";
 
 // UI-PRJ-01: display Name/Description/Status for both ADMIN and USER.
-// Create Project (UI-PRJ-02) is ADMIN-only. The `projects` array here stands
-// in for "what the backend already scoped to this viewer" — no client-side
-// role/membership filtering is applied (see plan: avoiding the exact
-// fetch-everything-then-filter anti-pattern the requirement warns against).
-// Soft-deleted projects (deletedAt set) are always excluded.
+// Create Project (UI-PRJ-02) is ADMIN-only. The project list is fetched
+// straight from the backend, which is authoritative for what this viewer
+// is scoped to see; soft-deleted projects are excluded server-side.
 export function ProjectListScreen({
   user,
-  projects,
+  accessToken,
   onSelectProject,
-  onCreateProject,
   onLogout,
   onShowSessionExpired,
   onNavigateAuditLogs,
+  onSessionExpired,
+  onAccessDenied,
 }: {
   user: { email: string; role: Role };
-  projects: Project[];
+  accessToken: string | null;
   onSelectProject: (id: string) => void;
-  onCreateProject: (name: string, description: string) => void;
   onLogout: () => void;
   onShowSessionExpired?: () => void;
   onNavigateAuditLogs?: () => void;
+  onSessionExpired: () => void;
+  onAccessDenied: () => void;
 }) {
   const isAdmin = user.role === "ADMIN";
-  const visibleProjects = projects.filter((p) => !p.deletedAt);
+  const { projects, loading, error, create } = useProjectsList(accessToken, onSessionExpired, onAccessDenied);
 
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [createState, setCreateState] = useState<CreateModalState>("default");
+  const [createErrorMessage, setCreateErrorMessage] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
 
   function openCreateModal() {
     setShowCreateModal(true);
     setCreateState("default");
+    setCreateErrorMessage(null);
     setName("");
     setDescription("");
   }
 
-  function handleCreate() {
+  async function handleCreate() {
     if (!name.trim()) {
       setCreateState("invalid");
       return;
     }
     setCreateState("loading");
-    setTimeout(() => {
-      onCreateProject(name.trim(), description.trim());
+    try {
+      await create(name.trim(), description.trim());
       setCreateState("success");
-    }, 800);
+    } catch (err) {
+      setCreateErrorMessage(err instanceof ApiError ? err.message : "Something went wrong while creating the project. Please try again.");
+      setCreateState("error");
+    }
   }
 
   return (
@@ -73,32 +80,36 @@ export function ProjectListScreen({
             </button>
           )}
         </div>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead>
-            <tr style={{ borderBottom: "2px solid #000" }}>
-              <th style={{ textAlign: "left", padding: "10px", borderBottom: "1px solid #ccc" }}>Name</th>
-              <th style={{ textAlign: "left", padding: "10px", borderBottom: "1px solid #ccc" }}>Description</th>
-              <th style={{ textAlign: "left", padding: "10px", borderBottom: "1px solid #ccc" }}>Status</th>
-              <th style={{ padding: "10px", borderBottom: "1px solid #ccc", textAlign: "center" }}>Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            {visibleProjects.map((p) => (
-              <tr key={p.id} style={{ borderBottom: "1px solid #ccc" }}>
-                <td style={{ padding: "10px" }}>{p.name}</td>
-                <td style={{ padding: "10px", color: "#666" }}>{p.description || "—"}</td>
-                <td style={{ padding: "10px" }}>
-                  <StatusBadge status={p.status} />
-                </td>
-                <td style={{ padding: "10px", textAlign: "center" }}>
-                  <button onClick={() => onSelectProject(p.id)} style={{ padding: "6px 12px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
-                    Open
-                  </button>
-                </td>
+        {loading && <p>Loading projects...</p>}
+        {error && <p style={{ color: "red" }}>{error}</p>}
+        {!loading && !error && (
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ borderBottom: "2px solid #000" }}>
+                <th style={{ textAlign: "left", padding: "10px", borderBottom: "1px solid #ccc" }}>Name</th>
+                <th style={{ textAlign: "left", padding: "10px", borderBottom: "1px solid #ccc" }}>Description</th>
+                <th style={{ textAlign: "left", padding: "10px", borderBottom: "1px solid #ccc" }}>Status</th>
+                <th style={{ padding: "10px", borderBottom: "1px solid #ccc", textAlign: "center" }}>Action</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {projects.map((p) => (
+                <tr key={p.projectId} style={{ borderBottom: "1px solid #ccc" }}>
+                  <td style={{ padding: "10px" }}>{p.projectName}</td>
+                  <td style={{ padding: "10px", color: "#666" }}>{p.description || "—"}</td>
+                  <td style={{ padding: "10px" }}>
+                    <StatusBadge status={p.projectStatus} />
+                  </td>
+                  <td style={{ padding: "10px", textAlign: "center" }}>
+                    <button onClick={() => onSelectProject(p.projectId)} style={{ padding: "6px 12px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
+                      Open
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
 
       {showCreateModal && (
@@ -132,7 +143,7 @@ export function ProjectListScreen({
                   />
                 </label>
                 {createState === "invalid" && <p style={{ color: "red", fontSize: "12px" }}>Project Name is required</p>}
-                {createState === "error" && <p style={{ color: "red", fontSize: "12px" }}>Something went wrong while creating the project. Please try again.</p>}
+                {createState === "error" && <p style={{ color: "red", fontSize: "12px" }}>{createErrorMessage}</p>}
                 {createState === "loading" && <p style={{ fontSize: "12px" }}>Creating project...</p>}
                 <div style={{ display: "flex", gap: "10px", marginTop: "15px" }}>
                   <button onClick={() => setShowCreateModal(false)} style={{ flex: 1, padding: "10px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
@@ -146,14 +157,6 @@ export function ProjectListScreen({
                     Create
                   </button>
                 </div>
-                {import.meta.env.DEV && (
-                  <div style={{ marginTop: "15px", padding: "8px", border: "1px dashed #ccc", backgroundColor: "#f9f9f9" }}>
-                    <p style={{ fontSize: "11px", color: "#666", margin: "0 0 5px" }}>*** Development Only - Demo Controls ***</p>
-                    <button onClick={() => setCreateState("error")} style={{ fontSize: "11px", padding: "5px 10px", border: "1px solid #ccc", cursor: "pointer" }}>
-                      Simulate server error
-                    </button>
-                  </div>
-                )}
               </>
             )}
           </div>

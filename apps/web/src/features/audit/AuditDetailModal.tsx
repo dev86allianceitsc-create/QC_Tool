@@ -1,4 +1,4 @@
-import type { AuditLogEntry } from "./audit.types";
+import type { AuditLogDetail } from "./audit.types";
 import { AuditResultBadge } from "./AuditResultBadge";
 
 // UI-SEC-04: centered modal opened from a table row in AuditLogScreen,
@@ -15,9 +15,9 @@ function Field({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ChangeBlock({ label, data }: { label: string; data: Record<string, string> | null }) {
-  if (!data) return null;
-  const entries = Object.entries(data);
+function ChangeBlock({ label, data }: { label: string; data: unknown }) {
+  if (data === null || data === undefined) return null;
+  const entries = typeof data === "object" ? Object.entries(data as Record<string, unknown>) : [];
   if (entries.length === 0) return null;
   return (
     <div style={{ marginBottom: "14px" }}>
@@ -25,7 +25,7 @@ function ChangeBlock({ label, data }: { label: string; data: Record<string, stri
       <div style={{ border: "1px solid #ccc", padding: "8px", fontSize: "12px", fontFamily: "monospace", backgroundColor: "#f9f9f9" }}>
         {entries.map(([key, value]) => (
           <div key={key}>
-            {key}: {value}
+            {key}: {String(value)}
           </div>
         ))}
       </div>
@@ -33,7 +33,17 @@ function ChangeBlock({ label, data }: { label: string; data: Record<string, stri
   );
 }
 
-export function AuditDetailModal({ entry, onClose }: { entry: AuditLogEntry; onClose: () => void }) {
+export function AuditDetailModal({
+  detail,
+  loading,
+  error,
+  onClose,
+}: {
+  detail: AuditLogDetail | null;
+  loading: boolean;
+  error: string | null;
+  onClose: () => void;
+}) {
   return (
     <div
       onClick={onClose}
@@ -59,23 +69,30 @@ export function AuditDetailModal({ entry, onClose }: { entry: AuditLogEntry; onC
           </button>
         </div>
 
-        <Field label="Audit ID" value={entry.id} />
-        <Field label="Event" value={entry.event} />
-        <div style={{ marginBottom: "14px" }}>
-          <div style={{ fontSize: "11px", color: "#666", marginBottom: "2px" }}>Result</div>
-          <AuditResultBadge result={entry.result} />
-        </div>
-        <Field label="Timestamp" value={new Date(entry.timestamp).toLocaleString()} />
-        <Field label="Actor" value={entry.actor ? entry.actor.email : "Unresolved / System"} />
-        <Field label="Actor / User ID" value={entry.actor ? entry.actor.id : "—"} />
-        <Field label="Target" value={entry.target} />
-        <Field label="Target Type" value={entry.targetType ?? "—"} />
-        <Field label="Target ID" value={entry.targetId ?? "—"} />
-        <Field label="Project" value={entry.project ? entry.project.name : "—"} />
-        <Field label="Project ID" value={entry.project ? entry.project.id : "—"} />
-        <ChangeBlock label="Change Information / Before" data={entry.before} />
-        <ChangeBlock label="Change Information / After" data={entry.after} />
-        <Field label="Request ID" value={entry.requestId ?? "—"} />
+        {loading && <p>Loading detail...</p>}
+        {error && <p style={{ color: "red" }}>{error}</p>}
+
+        {detail && (
+          <>
+            <Field label="Audit ID" value={detail.auditId} />
+            <Field label="Event" value={detail.eventType} />
+            <div style={{ marginBottom: "14px" }}>
+              <div style={{ fontSize: "11px", color: "#666", marginBottom: "2px" }}>Result</div>
+              <AuditResultBadge result={detail.result} />
+            </div>
+            <Field label="Timestamp" value={new Date(detail.occurredAt).toLocaleString()} />
+            <Field label="Actor" value={detail.actorDisplay ?? "Unresolved / System"} />
+            <Field label="Actor / User ID" value={detail.actorUserId ?? "—"} />
+            <Field label="Target" value={detail.targetDisplay ?? "—"} />
+            <Field label="Target Type" value={detail.targetType ?? "—"} />
+            <Field label="Target ID" value={detail.targetId ?? "—"} />
+            <Field label="Project ID" value={detail.projectId ?? "—"} />
+            <ChangeBlock label="Change Information / Before" data={detail.beforeData} />
+            <ChangeBlock label="Change Information / After" data={detail.afterData} />
+            <Field label="Request ID" value={detail.requestId ?? "—"} />
+            {detail.detail && <Field label="Detail" value={detail.detail} />}
+          </>
+        )}
       </div>
     </div>
   );

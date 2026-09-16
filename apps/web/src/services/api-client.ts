@@ -34,9 +34,13 @@ export class ApiError extends Error {
 }
 
 interface RequestOptions {
-  method?: "GET" | "POST";
+  method?: "GET" | "POST" | "PATCH" | "DELETE";
   body?: unknown;
   accessToken?: string | null;
+  // "text" is only for endpoints that don't return the JSON error envelope
+  // on success (e.g. the audit CSV export) — error responses are still
+  // parsed as JSON regardless of this setting.
+  responseType?: "json" | "text";
 }
 
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
@@ -59,9 +63,10 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   }
 
   const contentType = response.headers.get("content-type") ?? "";
-  const payload = contentType.includes("application/json") ? await response.json() : undefined;
+  const isJson = contentType.includes("application/json");
 
   if (!response.ok) {
+    const payload = isJson ? await response.json() : undefined;
     if (payload && typeof payload === "object" && typeof (payload as ApiErrorBody).errorCode === "string") {
       throw new ApiError(response.status, payload as ApiErrorBody);
     }
@@ -76,6 +81,11 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     });
   }
 
+  if (options.responseType === "text") {
+    return (await response.text()) as T;
+  }
+
+  const payload = isJson ? await response.json() : undefined;
   return payload as T;
 }
 
@@ -83,4 +93,9 @@ export const apiClient = {
   get: <T>(path: string, accessToken?: string | null) => request<T>(path, { method: "GET", accessToken }),
   post: <T>(path: string, body?: unknown, accessToken?: string | null) =>
     request<T>(path, { method: "POST", body, accessToken }),
+  patch: <T>(path: string, body?: unknown, accessToken?: string | null) =>
+    request<T>(path, { method: "PATCH", body, accessToken }),
+  delete: <T>(path: string, accessToken?: string | null) => request<T>(path, { method: "DELETE", accessToken }),
+  getText: (path: string, accessToken?: string | null): Promise<string> =>
+    request<string>(path, { method: "GET", accessToken, responseType: "text" }),
 };

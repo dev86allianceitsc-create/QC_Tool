@@ -12,3 +12,15 @@ export function mockJsonResponse(status: number, body?: unknown): Response {
     json: async () => body,
   } as unknown as Response;
 }
+
+export function mockTextResponse(status: number, body: string, contentType = "text/csv"): Response {
+  return {
+    status,
+    ok: status >= 200 && status < 300,
+    statusText: "",
+    headers: {
+      get: (name: string) => (name.toLowerCase() === "content-type" ? contentType : null),
+    },
+    text: async () => body,
+  } as unknown as Response;
+}

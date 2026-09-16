@@ -116,4 +116,20 @@ describe("useAuth", () => {
     expect(result.current.user).toBeNull();
     expect(window.sessionStorage.getItem(ACCESS_TOKEN_KEY)).toBeNull();
   });
+
+  it("reportSessionExpired clears the token, user and flags the session as expired", async () => {
+    window.sessionStorage.setItem(ACCESS_TOKEN_KEY, "valid-session-id");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockJsonResponse(200, SAMPLE_USER)));
+
+    const { result } = renderHook(() => useAuth());
+    await waitFor(() => expect(result.current.user).toEqual(SAMPLE_USER));
+
+    act(() => {
+      result.current.reportSessionExpired();
+    });
+
+    expect(result.current.sessionExpired).toBe(true);
+    expect(result.current.user).toBeNull();
+    expect(window.sessionStorage.getItem(ACCESS_TOKEN_KEY)).toBeNull();
+  });
 });

@@ -5,40 +5,17 @@ import { Header } from "./components/Header";
 import { ProjectListScreen } from "./features/projects/ProjectListScreen";
 import { ProjectDetailScreen } from "./features/projects/ProjectDetailScreen";
 import { MembersScreen } from "./features/projects/MembersScreen";
-import type { Member, Project, Role } from "./features/projects/projects.types";
+import type { Role } from "./features/projects/projects.types";
 import { AuditLogScreen } from "./features/audit/AuditLogScreen";
 
 // Post-authentication navigation only. Sign-in sub-states ("signin",
 // "signin-loading", "signin-error") now live in useAuth's AuthScreen instead.
-type Screen = "dashboard" | "no-project" | "project-detail" | "members" | "access-denied" | "audit-log";
+type Screen = "dashboard" | "project-detail" | "members" | "access-denied" | "audit-log";
 
 interface User {
   email: string;
   role: Role;
 }
-
-// Prototype-only demo identity — NOT an authenticated user. Used solely to
-// populate the "Development Only - Demo Controls" bypass below, which is
-// gated to import.meta.env.DEV and never used for the real auth path.
-const DEMO_USER: User = {
-  email: "user@example.com",
-  role: "ADMIN",
-};
-
-const INITIAL_PROJECTS: Project[] = [
-  { id: "p1", name: "Project A", description: "First demo project.", status: "ACTIVE", deletedAt: null },
-  { id: "p2", name: "Project B", description: "Second demo project.", status: "ACTIVE", deletedAt: null },
-  { id: "p3", name: "Project C", description: "Currently inactive demo project.", status: "INACTIVE", deletedAt: null },
-  { id: "p4", name: "Project D", description: "Fourth demo project.", status: "ACTIVE", deletedAt: null },
-];
-
-const INITIAL_MEMBERS: Member[] = [
-  { id: "m1", email: "admin@example.com", role: "ADMIN", status: "ACTIVE", addedAt: "2025-08-10" },
-  { id: "m2", email: "user1@example.com", role: "USER", status: "ACTIVE", addedAt: "2025-08-14" },
-  { id: "m3", email: "user2@example.com", role: "USER", status: "INVITED", addedAt: "2025-09-01" },
-  { id: "m4", email: "user3@example.com", role: "USER", status: "ACTIVE", addedAt: "2025-07-22" },
-  { id: "m5", email: "user4@example.com", role: "USER", status: "INACTIVE", addedAt: "2025-06-15" },
-];
 
 function SigningInScreen() {
   return (
@@ -69,12 +46,10 @@ function SignInErrorScreen({ errorType, onTryAgain }: { errorType: LoginErrorTyp
 }
 
 function SignInScreen({
-  onSignIn,
   onError,
   onStartLoading,
   showDemoControls,
 }: {
-  onSignIn: (hasProjects: boolean) => void;
   onError: (errorType: LoginErrorType) => void;
   onStartLoading: () => void;
   showDemoControls: boolean;
@@ -91,12 +66,6 @@ function SignInScreen({
           <div style={{ marginTop: "20px", padding: "10px", border: "1px dashed #ccc", backgroundColor: "#f9f9f9" }}>
             <p style={{ fontSize: "11px", color: "#666", margin: "5px 0" }}>*** Development Only - Demo Controls ***</p>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "5px" }}>
-              <button onClick={() => onSignIn(true)} style={{ fontSize: "11px", padding: "5px 10px", border: "1px solid #ccc", cursor: "pointer" }}>
-                Dashboard
-              </button>
-              <button onClick={() => onSignIn(false)} style={{ fontSize: "11px", padding: "5px 10px", border: "1px solid #ccc", cursor: "pointer" }}>
-                No Project
-              </button>
               <button onClick={() => { onStartLoading(); setTimeout(() => onError("user-not-registered"), 2000); }} style={{ fontSize: "11px", padding: "5px 10px", border: "1px solid #ccc", cursor: "pointer" }}>
                 Not Registered
               </button>
@@ -112,26 +81,6 @@ function SignInScreen({
             </div>
           </div>
         )}
-      </div>
-    </div>
-  );
-}
-
-function NoProjectScreen({ user, onLogout, onRefresh, onShowSessionExpired }: { user: User; onLogout: () => void; onRefresh: () => void; onShowSessionExpired?: () => void }) {
-  return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100vh", backgroundColor: "#fff" }}>
-      <Header user={user} onLogout={onLogout} title="QC Tool" onShowSessionExpired={onShowSessionExpired} />
-      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <div style={{ textAlign: "center", border: "1px solid #ccc", padding: "40px", width: "400px" }}>
-          <h2>No Projects Assigned</h2>
-          <p>Your account is active but you have not been assigned to any project.</p>
-          <p>Contact your administrator to request access to a project.</p>
-          <div style={{ display: "flex", gap: "10px", marginTop: "20px" }}>
-            <button onClick={onRefresh} style={{ flex: 1, padding: "10px 20px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
-              Refresh
-            </button>
-          </div>
-        </div>
       </div>
     </div>
   );
@@ -168,21 +117,17 @@ function SessionExpiredModal({ onSignInAgain }: { onSignInAgain: () => void }) {
 export default function App() {
   const auth = useAuth();
   const [screen, setScreen] = useState<Screen>("dashboard");
-  const [members, setMembers] = useState<Member[]>(INITIAL_MEMBERS);
-  const [projects, setProjects] = useState<Project[]>(INITIAL_PROJECTS);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const [selectedProjectName, setSelectedProjectName] = useState("");
 
   // Demo-mode bypass state (dev only) — completely independent of `auth` so
   // demo controls can never be mistaken for evidence of real authentication.
-  const [demoUser, setDemoUser] = useState<User | null>(null);
   const [demoPhase, setDemoPhase] = useState<"idle" | "loading" | "error">("idle");
   const [demoError, setDemoError] = useState<LoginErrorType | null>(null);
 
   const wasAuthenticated = useRef(false);
   useEffect(() => {
     if (auth.user && !wasAuthenticated.current) {
-      // A fresh real sign-in always lands on the (mocked) project dashboard —
-      // Project/Member data isn't wired to a real backend in this milestone.
       wasAuthenticated.current = true;
       setScreen("dashboard");
     }
@@ -191,59 +136,12 @@ export default function App() {
     }
   }, [auth.user]);
 
-  const activeUser: User | null = auth.user ? { email: auth.user.email, role: auth.user.systemRole } : demoUser;
+  const activeUser: User | null = auth.user ? { email: auth.user.email, role: auth.user.systemRole } : null;
 
   function handleLogout() {
-    setDemoUser(null);
     setDemoPhase("idle");
     setScreen("dashboard");
     void auth.signOut();
-  }
-
-  function handleAddMember(email: string) {
-    const newMember: Member = {
-      id: `m${Date.now()}`,
-      email: email.toLowerCase(),
-      role: "USER",
-      status: "INVITED",
-      addedAt: new Date().toISOString().split("T")[0],
-    };
-    setMembers([...members, newMember]);
-  }
-
-  function handleEditMember(id: string, email: string) {
-    setMembers(members.map((m) => (m.id === id ? { ...m, email } : m)));
-  }
-
-  function handleCancelMember(id: string) {
-    setMembers(members.filter((m) => m.id !== id));
-  }
-
-  function handleRemoveMember(id: string) {
-    setMembers(members.filter((m) => m.id !== id));
-  }
-
-  function handleCreateProject(name: string, description: string) {
-    const newProject: Project = {
-      id: `p${Date.now()}`,
-      name,
-      description,
-      status: "ACTIVE",
-      deletedAt: null,
-    };
-    setProjects([...projects, newProject]);
-  }
-
-  function handleEditProject(id: string, name: string, description: string) {
-    setProjects(projects.map((p) => (p.id === id ? { ...p, name, description } : p)));
-  }
-
-  function handleToggleProjectStatus(id: string) {
-    setProjects(projects.map((p) => (p.id === id ? { ...p, status: p.status === "ACTIVE" ? "INACTIVE" : "ACTIVE" } : p)));
-  }
-
-  function handleDeleteProject(id: string) {
-    setProjects(projects.map((p) => (p.id === id ? { ...p, deletedAt: new Date().toISOString() } : p)));
   }
 
   if (!activeUser) {
@@ -258,7 +156,6 @@ export default function App() {
 
         {!showingDemoLoading && !showingDemoError && auth.screen === "signin" && (
           <SignInScreen
-            onSignIn={(has) => { setDemoUser({ ...DEMO_USER }); setScreen(has ? "dashboard" : "no-project"); }}
             onError={(err) => { setDemoError(err); setDemoPhase("error"); }}
             onStartLoading={auth.signInWithGoogle}
             showDemoControls={import.meta.env.DEV}
@@ -277,60 +174,62 @@ export default function App() {
   }
 
   const onShowSessionExpired = import.meta.env.DEV ? auth.debugShowSessionExpired : undefined;
-  const selectedProject = projects.find((p) => p.id === selectedProjectId) ?? projects[0];
   const isAdmin = activeUser.role === "ADMIN";
+  const onSessionExpired = auth.reportSessionExpired;
+  const onAccessDenied = () => setScreen("access-denied");
 
   return (
     <div style={{ height: "100vh", overflow: "hidden" }}>
       {screen === "dashboard" && (
         <ProjectListScreen
           user={activeUser}
-          projects={projects}
+          accessToken={auth.accessToken}
           onSelectProject={(id) => { setSelectedProjectId(id); setScreen("project-detail"); }}
-          onCreateProject={handleCreateProject}
           onLogout={handleLogout}
           onShowSessionExpired={onShowSessionExpired}
           onNavigateAuditLogs={() => setScreen("audit-log")}
+          onSessionExpired={onSessionExpired}
+          onAccessDenied={onAccessDenied}
         />
       )}
 
-      {screen === "no-project" && <NoProjectScreen user={activeUser} onLogout={handleLogout} onRefresh={() => {}} onShowSessionExpired={onShowSessionExpired} />}
-
-      {screen === "project-detail" && selectedProject && (
+      {screen === "project-detail" && selectedProjectId && (
         <ProjectDetailScreen
           user={activeUser}
-          project={selectedProject}
+          projectId={selectedProjectId}
+          accessToken={auth.accessToken}
           onBack={() => setScreen("dashboard")}
           onLogout={handleLogout}
-          onMembersClick={() => setScreen("members")}
-          onEditProject={handleEditProject}
-          onToggleStatus={handleToggleProjectStatus}
-          onDeleteProject={handleDeleteProject}
+          onMembersClick={(projectName) => { setSelectedProjectName(projectName); setScreen("members"); }}
           onShowSessionExpired={onShowSessionExpired}
+          onSessionExpired={onSessionExpired}
+          onAccessDenied={onAccessDenied}
         />
       )}
 
-      {screen === "members" && (
+      {screen === "members" && selectedProjectId && (
         <MembersScreen
           user={activeUser}
-          projectName={selectedProject?.name ?? ""}
-          members={members}
+          projectId={selectedProjectId}
+          projectName={selectedProjectName}
+          accessToken={auth.accessToken}
           onBack={() => setScreen("project-detail")}
           onLogout={handleLogout}
-          onAddMember={handleAddMember}
-          onEditMember={handleEditMember}
-          onCancelMember={handleCancelMember}
-          onRemoveMember={handleRemoveMember}
           onShowSessionExpired={onShowSessionExpired}
+          onSessionExpired={onSessionExpired}
+          onAccessDenied={onAccessDenied}
         />
       )}
 
       {screen === "audit-log" && (isAdmin ? (
         <AuditLogScreen
           user={activeUser}
+          accessToken={auth.accessToken}
           onBack={() => setScreen("dashboard")}
           onLogout={handleLogout}
           onShowSessionExpired={onShowSessionExpired}
+          onSessionExpired={onSessionExpired}
+          onAccessDenied={onAccessDenied}
         />
       ) : (
         <AccessDeniedScreen onBack={() => setScreen("dashboard")} />

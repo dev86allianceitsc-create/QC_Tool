@@ -1,25 +1,24 @@
-// App-local (not packages/shared-types) — Project/Member domain remains
-// mocked and out of scope for a real backend contract in this milestone.
-// See apps/api/src/modules/projects/projects.module.ts (empty shell) and
-// prisma/schema.prisma (Project has no status/description/soft-delete column).
+// Mirrors the current backend contract exactly (API-PRJ-001..008).
 
 export type Role = "ADMIN" | "USER";
 export type MemberStatus = "ACTIVE" | "INVITED" | "INACTIVE" | "BLOCKED";
 export type ProjectStatus = "ACTIVE" | "INACTIVE";
 
-export interface Project {
-  id: string;
-  name: string;
-  description: string;
-  status: ProjectStatus;
-  // Soft-delete marker (mock-only). Never surfaced in normal list/detail UI.
-  deletedAt: string | null;
+export interface ProjectListItem {
+  projectId: string;
+  projectName: string;
+  description: string | null;
+  projectStatus: ProjectStatus;
 }
 
-export interface Member {
-  id: string;
+export interface ProjectDetail extends ProjectListItem {
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectMemberView {
+  userId: string;
   email: string;
-  role: Role;
-  status: MemberStatus;
-  addedAt: string;
+  systemRole: Role;
+  accountStatus: MemberStatus;
 }
