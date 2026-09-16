@@ -18,6 +18,7 @@ export function ProjectListScreen({
   onCreateProject,
   onLogout,
   onShowSessionExpired,
+  onNavigateAuditLogs,
 }: {
   user: { email: string; role: Role };
   projects: Project[];
@@ -25,6 +26,7 @@ export function ProjectListScreen({
   onCreateProject: (name: string, description: string) => void;
   onLogout: () => void;
   onShowSessionExpired?: () => void;
+  onNavigateAuditLogs?: () => void;
 }) {
   const isAdmin = user.role === "ADMIN";
   const visibleProjects = projects.filter((p) => !p.deletedAt);
@@ -55,7 +57,13 @@ export function ProjectListScreen({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh", backgroundColor: "#fff" }}>
-      <Header user={user} onLogout={onLogout} title="Projects" onShowSessionExpired={onShowSessionExpired} />
+      <Header
+        user={user}
+        onLogout={onLogout}
+        title="Projects"
+        onShowSessionExpired={onShowSessionExpired}
+        onNavigateAuditLogs={isAdmin ? onNavigateAuditLogs : undefined}
+      />
       <div style={{ flex: 1, padding: "20px", overflow: "auto" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <h2>Projects</h2>

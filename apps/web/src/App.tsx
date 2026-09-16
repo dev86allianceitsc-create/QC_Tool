@@ -6,10 +6,11 @@ import { ProjectListScreen } from "./features/projects/ProjectListScreen";
 import { ProjectDetailScreen } from "./features/projects/ProjectDetailScreen";
 import { MembersScreen } from "./features/projects/MembersScreen";
 import type { Member, Project, Role } from "./features/projects/projects.types";
+import { AuditLogScreen } from "./features/audit/AuditLogScreen";
 
 // Post-authentication navigation only. Sign-in sub-states ("signin",
 // "signin-loading", "signin-error") now live in useAuth's AuthScreen instead.
-type Screen = "dashboard" | "no-project" | "project-detail" | "members" | "access-denied";
+type Screen = "dashboard" | "no-project" | "project-detail" | "members" | "access-denied" | "audit-log";
 
 interface User {
   email: string;
@@ -277,6 +278,7 @@ export default function App() {
 
   const onShowSessionExpired = import.meta.env.DEV ? auth.debugShowSessionExpired : undefined;
   const selectedProject = projects.find((p) => p.id === selectedProjectId) ?? projects[0];
+  const isAdmin = activeUser.role === "ADMIN";
 
   return (
     <div style={{ height: "100vh", overflow: "hidden" }}>
@@ -288,6 +290,7 @@ export default function App() {
           onCreateProject={handleCreateProject}
           onLogout={handleLogout}
           onShowSessionExpired={onShowSessionExpired}
+          onNavigateAuditLogs={() => setScreen("audit-log")}
         />
       )}
 
@@ -321,6 +324,17 @@ export default function App() {
           onShowSessionExpired={onShowSessionExpired}
         />
       )}
+
+      {screen === "audit-log" && (isAdmin ? (
+        <AuditLogScreen
+          user={activeUser}
+          onBack={() => setScreen("dashboard")}
+          onLogout={handleLogout}
+          onShowSessionExpired={onShowSessionExpired}
+        />
+      ) : (
+        <AccessDeniedScreen onBack={() => setScreen("dashboard")} />
+      ))}
 
       {screen === "access-denied" && <AccessDeniedScreen onBack={() => setScreen("dashboard")} />}
 
