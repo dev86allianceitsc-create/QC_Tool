@@ -3,6 +3,7 @@ import type { User, UserSession } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { BusinessException } from "../../common/exceptions/business.exception";
 import { SessionsService } from "../sessions/sessions.service";
+import { AuditWriterService } from "../audit/audit-writer.service";
 import { AuthService } from "./auth.service";
 import { GoogleAuthError, GoogleIdentityService } from "./google-identity.service";
 
@@ -39,25 +40,30 @@ describe("AuthService.loginWithGoogle", () => {
     user: Record<string, jest.Mock>;
     userSession: Record<string, jest.Mock>;
     $transaction: jest.Mock;
+    $executeRaw: jest.Mock;
   };
   let sessionsService: { create: jest.Mock };
   let googleIdentityService: { exchange: jest.Mock };
+  let auditWriter: { record: jest.Mock };
   let service: AuthService;
 
   const identity = { sub: "google-sub-1", email: "USER@Example.com", emailVerified: true };
 
   beforeEach(() => {
     prisma = {
-      user: { findUnique: jest.fn(), update: jest.fn() },
+      user: { findUnique: jest.fn(), update: jest.fn(), create: jest.fn(), count: jest.fn() },
       userSession: { create: jest.fn() },
       $transaction: jest.fn(async (fn) => fn(prisma)),
+      $executeRaw: jest.fn(),
     };
     sessionsService = { create: jest.fn() };
     googleIdentityService = { exchange: jest.fn() };
+    auditWriter = { record: jest.fn() };
     service = new AuthService(
       prisma as unknown as PrismaService,
       sessionsService as unknown as SessionsService,
       googleIdentityService as unknown as GoogleIdentityService,
+      auditWriter as unknown as AuditWriterService,
     );
   });
 
@@ -79,12 +85,14 @@ describe("AuthService.loginWithGoogle", () => {
     expect(prisma.userSession.create).not.toHaveBeenCalled();
   });
 
-  it("rejects with ACCOUNT_NOT_REGISTERED when no user matches by subject id or normalized email", async () => {
+  it("rejects with ACCOUNT_NOT_REGISTERED when no user matches by subject id or normalized email and users already exist", async () => {
     googleIdentityService.exchange.mockResolvedValue(identity);
     prisma.user.findUnique.mockResolvedValue(null);
+    prisma.user.count.mockResolvedValue(1);
 
     const err = await service.loginWithGoogle("code").catch((e) => e);
     expect(err.getResponse()).toMatchObject({ errorCode: "ACCOUNT_NOT_REGISTERED" });
+    expect(prisma.user.create).not.toHaveBeenCalled();
     expect(prisma.userSession.create).not.toHaveBeenCalled();
   });
 
@@ -95,6 +103,101 @@ describe("AuthService.loginWithGoogle", () => {
     const err = await service.loginWithGoogle("code").catch((e) => e);
     expect(err.getResponse()).toMatchObject({ errorCode: "IDENTITY_LINK_CONFLICT" });
     expect(prisma.userSession.create).not.toHaveBeenCalled();
+  });
+
+  describe("First Admin Bootstrap (FR-USR-001-23)", () => {
+    beforeEach(() => {
+      googleIdentityService.exchange.mockResolvedValue(identity);
+      prisma.user.findUnique.mockResolvedValue(null);
+    });
+
+    it("auto-provisions the first verified Google identity as ACTIVE ADMIN when users.count == 0, and creates a session", async () => {
+      prisma.user.count.mockResolvedValue(0);
+      prisma.user.create.mockImplementation(({ data }) =>
+        Promise.resolve(makeUser({ ...data, accountStatus: "ACTIVE", systemRole: "ADMIN" })),
+      );
+      prisma.userSession.create.mockImplementation(({ data }) => Promise.resolve(makeSession(data)));
+
+      const result = await service.loginWithGoogle("code");
+
+      expect(prisma.$executeRaw).toHaveBeenCalledTimes(1);
+      expect(prisma.user.count).toHaveBeenCalledTimes(1);
+      expect(prisma.user.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          email: "user@example.com",
+          googleSubjectId: "google-sub-1",
+          systemRole: "ADMIN",
+          accountStatus: "ACTIVE",
+          activatedAt: expect.any(Date),
+        }),
+      });
+      expect(prisma.userSession.create).toHaveBeenCalledTimes(1);
+      expect(auditWriter.record).toHaveBeenCalledWith(
+        expect.objectContaining({ eventType: "FIRST_ADMIN_BOOTSTRAP", result: "SUCCESS" }),
+        prisma,
+      );
+      expect(result.user.systemRole).toBe("ADMIN");
+      expect(result.user.accountStatus).toBe("ACTIVE");
+      expect(result.accessToken).toEqual(expect.any(String));
+    });
+
+    it("does NOT bootstrap when users already exist, even if none of them is an ADMIN (users.count == 0 is the only trigger)", async () => {
+      prisma.user.count.mockResolvedValue(3);
+
+      const err = await service.loginWithGoogle("code").catch((e) => e);
+
+      expect(err).toBeInstanceOf(BusinessException);
+      expect(err.getResponse()).toMatchObject({ errorCode: "ACCOUNT_NOT_REGISTERED" });
+      expect(prisma.user.create).not.toHaveBeenCalled();
+      expect(prisma.userSession.create).not.toHaveBeenCalled();
+      expect(auditWriter.record).not.toHaveBeenCalled();
+    });
+
+    it("proves concurrency safety: two simultaneous first-login attempts on an empty users table cannot both bootstrap as ADMIN", async () => {
+      // Simulate the advisory lock serializing the two transactions: the
+      // second caller's re-check of users.count only sees > 0 once the
+      // first transaction's user.create has actually landed.
+      let usersCreated = 0;
+      let lockHolder: Promise<void> | null = null;
+
+      prisma.$executeRaw.mockImplementation(async () => {
+        while (lockHolder) {
+          await lockHolder;
+        }
+        let release!: () => void;
+        lockHolder = new Promise((resolve) => {
+          release = () => {
+            lockHolder = null;
+            resolve();
+          };
+        });
+        (prisma.$executeRaw as any).release = release;
+      });
+      prisma.user.count.mockImplementation(async () => usersCreated);
+      prisma.user.create.mockImplementation(async ({ data }) => {
+        usersCreated += 1;
+        const user = makeUser({ ...data, accountStatus: "ACTIVE", systemRole: "ADMIN" });
+        (prisma.$executeRaw as any).release?.();
+        return user;
+      });
+      prisma.userSession.create.mockImplementation(({ data }) => Promise.resolve(makeSession(data)));
+
+      const [resultA, resultB] = await Promise.allSettled([
+        service.loginWithGoogle("code-a"),
+        service.loginWithGoogle("code-b"),
+      ]);
+
+      const succeeded = [resultA, resultB].filter((r) => r.status === "fulfilled");
+      const rejected = [resultA, resultB].filter((r) => r.status === "rejected");
+
+      expect(succeeded).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect((rejected[0] as PromiseRejectedResult).reason.getResponse()).toMatchObject({
+        errorCode: "ACCOUNT_NOT_REGISTERED",
+      });
+      expect(prisma.user.create).toHaveBeenCalledTimes(1);
+      expect(auditWriter.record).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe("first login (INVITED, unlinked)", () => {

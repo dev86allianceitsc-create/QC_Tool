@@ -25,8 +25,6 @@ function renderScreen(user: typeof ADMIN | typeof USER) {
       projectId="p1"
       accessToken="token-1"
       onBack={vi.fn()}
-      onLogout={vi.fn()}
-      onMembersClick={vi.fn()}
       onSessionExpired={vi.fn()}
       onAccessDenied={vi.fn()}
     />,
@@ -104,7 +102,7 @@ describe("ProjectDetailScreen", () => {
     const fetchMock = stubFetch();
     const onBack = vi.fn();
     render(
-      <ProjectDetailScreen user={ADMIN} projectId="p1" accessToken="token-1" onBack={onBack} onLogout={vi.fn()} onMembersClick={vi.fn()} onSessionExpired={vi.fn()} onAccessDenied={vi.fn()} />,
+      <ProjectDetailScreen user={ADMIN} projectId="p1" accessToken="token-1" onBack={onBack} onSessionExpired={vi.fn()} onAccessDenied={vi.fn()} />,
     );
     await screen.findAllByText("Project A");
 
@@ -116,17 +114,5 @@ describe("ProjectDetailScreen", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(onBack).toHaveBeenCalled();
-  });
-
-  it("calls onMembersClick with the project name when the Members tab is clicked", async () => {
-    stubFetch();
-    const onMembersClick = vi.fn();
-    render(
-      <ProjectDetailScreen user={ADMIN} projectId="p1" accessToken="token-1" onBack={vi.fn()} onLogout={vi.fn()} onMembersClick={onMembersClick} onSessionExpired={vi.fn()} onAccessDenied={vi.fn()} />,
-    );
-    await screen.findAllByText("Project A");
-
-    fireEvent.click(screen.getByText("Members"));
-    expect(onMembersClick).toHaveBeenCalledWith("Project A");
   });
 });

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { Header } from "../../components/Header";
 import { ApiError } from "../../services/api-client";
+import { InactiveBanner } from "../apiEnvironment/InactiveBanner";
 import { ConfirmDialog } from "./ConfirmDialog";
 import type { Role } from "./projects.types";
 import { StatusBadge } from "./StatusBadge";
@@ -8,14 +8,13 @@ import { useProjectDetail } from "./useProjectDetail";
 
 // UI-PRJ-03/04/05/06: display fields for both roles; Edit/Activate-Deactivate/
 // Delete are ADMIN-only actions surfaced here (not on the List screen).
+// Project-level Header/Back/tabs live in ProjectLayout, which renders this as
+// the Overview tab's content.
 export function ProjectDetailScreen({
   user,
   projectId,
   accessToken,
   onBack,
-  onLogout,
-  onMembersClick,
-  onShowSessionExpired,
   onSessionExpired,
   onAccessDenied,
 }: {
@@ -23,16 +22,12 @@ export function ProjectDetailScreen({
   projectId: string;
   accessToken: string | null;
   onBack: () => void;
-  onLogout: () => void;
-  onMembersClick: (projectName: string) => void;
-  onShowSessionExpired?: () => void;
   onSessionExpired: () => void;
   onAccessDenied: () => void;
 }) {
   const isAdmin = user.role === "ADMIN";
   const { project, loading, error, update, remove } = useProjectDetail(projectId, accessToken, onSessionExpired, onAccessDenied);
 
-  const [activeTab, setActiveTab] = useState<"overview" | "members">("overview");
   const [showEditModal, setShowEditModal] = useState(false);
   const [editName, setEditName] = useState("");
   const [editDescription, setEditDescription] = useState("");
@@ -51,25 +46,16 @@ export function ProjectDetailScreen({
 
   if (loading) {
     return (
-      <div style={{ display: "flex", flexDirection: "column", height: "100vh", backgroundColor: "#fff" }}>
-        <Header user={user} onLogout={onLogout} title="Loading..." onShowSessionExpired={onShowSessionExpired} />
-        <div style={{ flex: 1, padding: "20px" }}>
-          <p>Loading project...</p>
-        </div>
+      <div style={{ padding: "20px" }}>
+        <p>Loading project...</p>
       </div>
     );
   }
 
   if (error || !project) {
     return (
-      <div style={{ display: "flex", flexDirection: "column", height: "100vh", backgroundColor: "#fff" }}>
-        <Header user={user} onLogout={onLogout} title="Project" onShowSessionExpired={onShowSessionExpired} />
-        <div style={{ flex: 1, padding: "20px" }}>
-          <p style={{ color: "red" }}>{error ?? "Project not found."}</p>
-          <button onClick={onBack} style={{ padding: "6px 12px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
-            ← Back
-          </button>
-        </div>
+      <div style={{ padding: "20px" }}>
+        <p style={{ color: "red" }}>{error ?? "Project not found."}</p>
       </div>
     );
   }
@@ -116,57 +102,31 @@ export function ProjectDetailScreen({
   const isDeactivating = project.projectStatus === "ACTIVE";
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100vh", backgroundColor: "#fff" }}>
-      <Header user={user} onLogout={onLogout} title={project.projectName} onShowSessionExpired={onShowSessionExpired} />
-      <div style={{ padding: "10px 20px", borderBottom: "1px solid #ccc", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <button onClick={onBack} style={{ padding: "6px 12px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
-          ← Back
-        </button>
-        {isAdmin && (
-          <div style={{ display: "flex", gap: "10px" }}>
-            <button onClick={openEditModal} style={{ padding: "6px 12px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
-              Edit
-            </button>
-            <button onClick={() => { setStatusError(null); setShowStatusConfirm(true); }} style={{ padding: "6px 12px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
-              {isDeactivating ? "Deactivate" : "Activate"}
-            </button>
-            <button onClick={() => { setDeleteError(null); setShowDeleteConfirm(true); }} style={{ padding: "6px 12px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer", color: "red" }}>
-              Delete
-            </button>
-          </div>
-        )}
-      </div>
-      <div style={{ display: "flex", borderBottom: "1px solid #ccc" }}>
-        {["overview", "members"].map((tab) => (
-          <button
-            key={tab}
-            onClick={() => {
-              setActiveTab(tab as "overview" | "members");
-              if (tab === "members") onMembersClick(project.projectName);
-            }}
-            style={{
-              padding: "10px 20px",
-              border: "none",
-              borderBottom: activeTab === tab ? "2px solid #000" : "none",
-              backgroundColor: "#fff",
-              cursor: "pointer",
-              fontWeight: activeTab === tab ? "bold" : "normal",
-            }}
-          >
-            {tab.charAt(0).toUpperCase() + tab.slice(1)}
+    <div>
+      {project.projectStatus === "INACTIVE" && (
+        <InactiveBanner message="This Project is INACTIVE. It is view-only — Edit, Activate, and Delete are unavailable until it is reactivated." />
+      )}
+      {isAdmin && (
+        <div style={{ padding: "10px 20px", borderBottom: "1px solid #ccc", display: "flex", justifyContent: "flex-end", gap: "10px" }}>
+          <button onClick={openEditModal} disabled={project.projectStatus === "INACTIVE"} style={{ padding: "6px 12px", border: "1px solid #000", backgroundColor: "#fff", cursor: project.projectStatus === "INACTIVE" ? "not-allowed" : "pointer", opacity: project.projectStatus === "INACTIVE" ? 0.5 : 1 }}>
+            Edit
           </button>
-        ))}
-      </div>
-      <div style={{ flex: 1, padding: "20px", overflow: "auto" }}>
-        {activeTab === "overview" && (
-          <div style={{ border: "1px solid #ccc", padding: "20px" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-              <h3 style={{ margin: 0 }}>{project.projectName}</h3>
-              <StatusBadge status={project.projectStatus} />
-            </div>
-            <p style={{ color: "#666", marginTop: "10px" }}>{project.description || "No description provided."}</p>
+          <button onClick={() => { setStatusError(null); setShowStatusConfirm(true); }} style={{ padding: "6px 12px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
+            {isDeactivating ? "Deactivate" : "Activate"}
+          </button>
+          <button onClick={() => { setDeleteError(null); setShowDeleteConfirm(true); }} disabled={project.projectStatus === "INACTIVE"} style={{ padding: "6px 12px", border: "1px solid #000", backgroundColor: "#fff", cursor: project.projectStatus === "INACTIVE" ? "not-allowed" : "pointer", color: "red", opacity: project.projectStatus === "INACTIVE" ? 0.5 : 1 }}>
+            Delete
+          </button>
+        </div>
+      )}
+      <div style={{ padding: "20px" }}>
+        <div style={{ border: "1px solid #ccc", padding: "20px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <h3 style={{ margin: 0 }}>{project.projectName}</h3>
+            <StatusBadge status={project.projectStatus} />
           </div>
-        )}
+          <p style={{ color: "#666", marginTop: "10px" }}>{project.description || "No description provided."}</p>
+        </div>
       </div>
 
       {showEditModal && (

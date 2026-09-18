@@ -34,7 +34,7 @@ export class ApiError extends Error {
 }
 
 interface RequestOptions {
-  method?: "GET" | "POST" | "PATCH" | "DELETE";
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   body?: unknown;
   accessToken?: string | null;
   // "text" is only for endpoints that don't return the JSON error envelope
@@ -43,21 +43,7 @@ interface RequestOptions {
   responseType?: "json" | "text";
 }
 
-async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const headers: Record<string, string> = {};
-  if (options.body !== undefined) {
-    headers["Content-Type"] = "application/json";
-  }
-  if (options.accessToken) {
-    headers["Authorization"] = `Bearer ${options.accessToken}`;
-  }
-
-  const response = await fetch(`${baseUrl()}${path}`, {
-    method: options.method ?? "GET",
-    headers,
-    body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
-  });
-
+async function handleResponse<T>(response: Response, responseType?: "json" | "text"): Promise<T> {
   if (response.status === 204) {
     return undefined as T;
   }
@@ -81,7 +67,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     });
   }
 
-  if (options.responseType === "text") {
+  if (responseType === "text") {
     return (await response.text()) as T;
   }
 
@@ -89,13 +75,52 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   return payload as T;
 }
 
+async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const headers: Record<string, string> = {};
+  if (options.body !== undefined) {
+    headers["Content-Type"] = "application/json";
+  }
+  if (options.accessToken) {
+    headers["Authorization"] = `Bearer ${options.accessToken}`;
+  }
+
+  const response = await fetch(`${baseUrl()}${path}`, {
+    method: options.method ?? "GET",
+    headers,
+    body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+  });
+
+  return handleResponse<T>(response, options.responseType);
+}
+
+// Multipart uploads (OpenAPI import) skip the JSON Content-Type entirely —
+// the browser sets the multipart boundary itself — but reuse the same
+// error-envelope handling as every other request.
+async function requestForm<T>(path: string, form: FormData, accessToken?: string | null): Promise<T> {
+  const headers: Record<string, string> = {};
+  if (accessToken) {
+    headers["Authorization"] = `Bearer ${accessToken}`;
+  }
+
+  const response = await fetch(`${baseUrl()}${path}`, {
+    method: "POST",
+    headers,
+    body: form,
+  });
+
+  return handleResponse<T>(response);
+}
+
 export const apiClient = {
   get: <T>(path: string, accessToken?: string | null) => request<T>(path, { method: "GET", accessToken }),
   post: <T>(path: string, body?: unknown, accessToken?: string | null) =>
     request<T>(path, { method: "POST", body, accessToken }),
+  put: <T>(path: string, body?: unknown, accessToken?: string | null) =>
+    request<T>(path, { method: "PUT", body, accessToken }),
   patch: <T>(path: string, body?: unknown, accessToken?: string | null) =>
     request<T>(path, { method: "PATCH", body, accessToken }),
   delete: <T>(path: string, accessToken?: string | null) => request<T>(path, { method: "DELETE", accessToken }),
   getText: (path: string, accessToken?: string | null): Promise<string> =>
     request<string>(path, { method: "GET", accessToken, responseType: "text" }),
+  postForm: <T>(path: string, form: FormData, accessToken?: string | null) => requestForm<T>(path, form, accessToken),
 };

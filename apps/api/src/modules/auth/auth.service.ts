@@ -5,6 +5,7 @@ import { PrismaService } from "../../prisma/prisma.service";
 import { BusinessException } from "../../common/exceptions/business.exception";
 import { normalizeEmail } from "../../common/utils/email";
 import { computeExpiresAt, SessionsService } from "../sessions/sessions.service";
+import { AuditWriterService } from "../audit/audit-writer.service";
 import { GoogleIdentityService } from "./google-identity.service";
 
 export interface GoogleLoginResult {
@@ -21,12 +22,18 @@ export interface GoogleLoginResult {
 
 const VALID_SYSTEM_ROLES = new Set(["ADMIN", "USER"]);
 
+// Fixed, arbitrary key for a Postgres session-scoped advisory lock
+// (pg_advisory_xact_lock) — see tryBootstrapFirstAdmin. Any stable int8 works;
+// this one has no meaning beyond "the First Admin Bootstrap critical section".
+const FIRST_ADMIN_BOOTSTRAP_LOCK_KEY = 91_1001n;
+
 @Injectable()
 export class AuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly sessionsService: SessionsService,
     private readonly googleIdentityService: GoogleIdentityService,
+    private readonly auditWriter: AuditWriterService,
   ) {}
 
   async loginWithGoogle(authorizationCode: string): Promise<GoogleLoginResult> {
@@ -37,11 +44,21 @@ export class AuthService {
     }
 
     const normalizedEmail = normalizeEmail(identity.email);
-    const user = await this.resolveUser(identity.sub, normalizedEmail);
+    const user = await this.findUser(identity.sub, normalizedEmail);
 
     let activeUser: User;
     let session: UserSession;
-    if (!user.googleSubjectId) {
+    if (!user) {
+      // FR-USR-001-23 / REQ-USR-001 First Admin Bootstrap: only reachable
+      // when no existing account matches by subject id or email. Eligibility
+      // is re-checked inside the transaction (users.count == 0), never
+      // admin count == 0, and is concurrency-safe (advisory transaction lock).
+      const bootstrapped = await this.tryBootstrapFirstAdmin(identity.sub, normalizedEmail);
+      if (!bootstrapped) {
+        throw new BusinessException(HttpStatus.NOT_FOUND, "ACCOUNT_NOT_REGISTERED", "No pre-registered account found for this identity");
+      }
+      ({ user: activeUser, session } = bootstrapped);
+    } else if (!user.googleSubjectId) {
       ({ user: activeUser, session } = await this.linkFirstLogin(user, identity.sub));
     } else {
       this.assertAccountUsable(user);
@@ -72,18 +89,74 @@ export class AuthService {
     }
   }
 
-  private async resolveUser(googleSubjectId: string, normalizedEmail: string): Promise<User> {
+  private async findUser(googleSubjectId: string, normalizedEmail: string): Promise<User | null> {
     const user =
       (await this.prisma.user.findUnique({ where: { googleSubjectId } })) ??
       (await this.prisma.user.findUnique({ where: { email: normalizedEmail } }));
 
-    if (!user) {
-      throw new BusinessException(HttpStatus.NOT_FOUND, "ACCOUNT_NOT_REGISTERED", "No pre-registered account found for this identity");
-    }
-    if (user.googleSubjectId && user.googleSubjectId !== googleSubjectId) {
+    if (user && user.googleSubjectId && user.googleSubjectId !== googleSubjectId) {
       throw new BusinessException(HttpStatus.CONFLICT, "IDENTITY_LINK_CONFLICT", "Account is already linked to a different Google identity");
     }
     return user;
+  }
+
+  // First Admin Bootstrap (REQ-USR-001 FR-USR-001-23, CONFIRMED business rule
+  // change): when the users table is completely empty, the first verified
+  // Google identity to log in becomes the first ACTIVE ADMIN automatically.
+  // Eligibility is users.count == 0, never admin count == 0 — once any User
+  // exists, this never runs again, regardless of whether an ADMIN exists.
+  //
+  // Concurrency: two simultaneous first-logins against an empty table must
+  // not both bootstrap. A Postgres transaction-scoped advisory lock
+  // (pg_advisory_xact_lock) serializes all bootstrap attempts on a fixed key
+  // — the second caller blocks until the first commits/rolls back, then
+  // re-reads users.count and (now > 0) safely returns null instead of
+  // creating a second ADMIN. The lock is released automatically at
+  // transaction end; no schema/migration change is required.
+  private async tryBootstrapFirstAdmin(
+    googleSubjectId: string,
+    normalizedEmail: string,
+  ): Promise<{ user: User; session: UserSession } | null> {
+    const createdAt = new Date();
+    const expiresAt = computeExpiresAt(createdAt);
+
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${FIRST_ADMIN_BOOTSTRAP_LOCK_KEY})`;
+
+      const userCount = await tx.user.count();
+      if (userCount > 0) {
+        return null;
+      }
+
+      const user = await tx.user.create({
+        data: {
+          email: normalizedEmail,
+          googleSubjectId,
+          systemRole: "ADMIN",
+          accountStatus: "ACTIVE",
+          activatedAt: createdAt,
+        },
+      });
+      const session = await tx.userSession.create({
+        data: { userId: user.userId, createdAt, expiresAt },
+      });
+
+      await this.auditWriter.record(
+        {
+          eventType: "FIRST_ADMIN_BOOTSTRAP",
+          result: "SUCCESS",
+          actorUserId: user.userId,
+          actorDisplay: user.email,
+          targetType: "USER",
+          targetId: user.userId,
+          targetDisplay: user.email,
+          detail: "First verified Google login on an empty users table; auto-provisioned as the first ACTIVE ADMIN",
+        },
+        tx,
+      );
+
+      return { user, session };
+    });
   }
 
   // First-time linking: the user is pre-registered but unlinked. Only

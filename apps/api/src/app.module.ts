@@ -8,6 +8,7 @@ import { UsersModule } from "./modules/users/users.module";
 import { SessionsModule } from "./modules/sessions/sessions.module";
 import { ProjectsModule } from "./modules/projects/projects.module";
 import { AuditModule } from "./modules/audit/audit.module";
+import { ApiEnvironmentModule } from "./modules/api-environment/api-environment.module";
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { AuditModule } from "./modules/audit/audit.module";
     SessionsModule,
     AuditModule,
     ProjectsModule,
+    ApiEnvironmentModule,
   ],
   controllers: [AppController],
   providers: [AppService],

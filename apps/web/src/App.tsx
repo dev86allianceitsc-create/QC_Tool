@@ -1,16 +1,17 @@
 import { useEffect, useRef, useState } from "react";
+import { BrowserRouter, Navigate, Route, Routes, useNavigate, useOutletContext, useParams } from "react-router-dom";
 import { useAuth } from "./features/auth/useAuth";
 import { ERROR_MESSAGES, type LoginErrorType } from "./features/auth/auth.types";
 import { Header } from "./components/Header";
 import { ProjectListScreen } from "./features/projects/ProjectListScreen";
 import { ProjectDetailScreen } from "./features/projects/ProjectDetailScreen";
 import { MembersScreen } from "./features/projects/MembersScreen";
+import { ProjectLayout, type ProjectLayoutContext } from "./features/projects/ProjectLayout";
 import type { Role } from "./features/projects/projects.types";
 import { AuditLogScreen } from "./features/audit/AuditLogScreen";
-
-// Post-authentication navigation only. Sign-in sub-states ("signin",
-// "signin-loading", "signin-error") now live in useAuth's AuthScreen instead.
-type Screen = "dashboard" | "project-detail" | "members" | "access-denied" | "audit-log";
+import { ApiDetailScreen } from "./features/apiEnvironment/ApiDetailScreen";
+import { ApiListScreen } from "./features/apiEnvironment/ApiListScreen";
+import { EnvironmentListScreen } from "./features/apiEnvironment/EnvironmentListScreen";
 
 interface User {
   email: string;
@@ -114,14 +115,206 @@ function SessionExpiredModal({ onSignInAgain }: { onSignInAgain: () => void }) {
   );
 }
 
+// Thin route-level adapters: pull Project chrome context (from ProjectLayout's
+// <Outlet context={...}>) and URL params, then render the existing screens
+// with the same props they always took — only the navigation wiring changes.
+
+function ProjectOverviewRoute() {
+  const ctx = useOutletContext<ProjectLayoutContext>();
+  const navigate = useNavigate();
+  return (
+    <ProjectDetailScreen
+      user={ctx.user}
+      projectId={ctx.projectId}
+      accessToken={ctx.accessToken}
+      onBack={() => navigate("/")}
+      onSessionExpired={ctx.onSessionExpired}
+      onAccessDenied={ctx.onAccessDenied}
+    />
+  );
+}
+
+function ApiListRoute() {
+  const ctx = useOutletContext<ProjectLayoutContext>();
+  const navigate = useNavigate();
+  return (
+    <ApiListScreen
+      user={ctx.user}
+      projectId={ctx.projectId}
+      projectStatus={ctx.projectStatus}
+      accessToken={ctx.accessToken}
+      onSessionExpired={ctx.onSessionExpired}
+      onAccessDenied={ctx.onAccessDenied}
+      onSelectApi={(apiId) => navigate(`/projects/${ctx.projectId}/apis/${apiId}`)}
+    />
+  );
+}
+
+function ApiDetailRoute() {
+  const ctx = useOutletContext<ProjectLayoutContext>();
+  const { apiId } = useParams<{ apiId: string }>();
+  const navigate = useNavigate();
+  if (!apiId) return <Navigate to={`/projects/${ctx.projectId}/apis`} replace />;
+  return (
+    <ApiDetailScreen
+      user={ctx.user}
+      projectId={ctx.projectId}
+      projectStatus={ctx.projectStatus}
+      apiId={apiId}
+      accessToken={ctx.accessToken}
+      onBack={() => navigate(`/projects/${ctx.projectId}/apis`)}
+      onSessionExpired={ctx.onSessionExpired}
+      onAccessDenied={ctx.onAccessDenied}
+    />
+  );
+}
+
+function EnvironmentListRoute() {
+  const ctx = useOutletContext<ProjectLayoutContext>();
+  return (
+    <EnvironmentListScreen
+      user={ctx.user}
+      projectId={ctx.projectId}
+      projectStatus={ctx.projectStatus}
+      accessToken={ctx.accessToken}
+      onSessionExpired={ctx.onSessionExpired}
+      onAccessDenied={ctx.onAccessDenied}
+    />
+  );
+}
+
+function MembersRoute() {
+  const ctx = useOutletContext<ProjectLayoutContext>();
+  return (
+    <MembersScreen
+      user={ctx.user}
+      projectId={ctx.projectId}
+      projectName={ctx.projectName}
+      accessToken={ctx.accessToken}
+      onSessionExpired={ctx.onSessionExpired}
+      onAccessDenied={ctx.onAccessDenied}
+    />
+  );
+}
+
+function AuthenticatedApp({
+  activeUser,
+  isAdmin,
+  accessToken,
+  onLogout,
+  onShowSessionExpired,
+  onSessionExpired,
+  sessionExpired,
+  onSignInAgain,
+}: {
+  activeUser: User;
+  isAdmin: boolean;
+  accessToken: string | null;
+  onLogout: () => void;
+  onShowSessionExpired?: () => void;
+  onSessionExpired: () => void;
+  sessionExpired: boolean;
+  onSignInAgain: () => void;
+}) {
+  return (
+    <BrowserRouter>
+      <AuthenticatedRoutes
+        activeUser={activeUser}
+        isAdmin={isAdmin}
+        accessToken={accessToken}
+        onLogout={onLogout}
+        onShowSessionExpired={onShowSessionExpired}
+        onSessionExpired={onSessionExpired}
+      />
+      {sessionExpired && <SessionExpiredModal onSignInAgain={onSignInAgain} />}
+    </BrowserRouter>
+  );
+}
+
+function AuthenticatedRoutes({
+  activeUser,
+  isAdmin,
+  accessToken,
+  onLogout,
+  onShowSessionExpired,
+  onSessionExpired,
+}: {
+  activeUser: User;
+  isAdmin: boolean;
+  accessToken: string | null;
+  onLogout: () => void;
+  onShowSessionExpired?: () => void;
+  onSessionExpired: () => void;
+}) {
+  const navigate = useNavigate();
+  const onAccessDenied = () => navigate("/access-denied");
+
+  return (
+    <Routes>
+      <Route
+        path="/"
+        element={
+          <ProjectListScreen
+            user={activeUser}
+            accessToken={accessToken}
+            onSelectProject={(id) => navigate(`/projects/${id}`)}
+            onLogout={onLogout}
+            onShowSessionExpired={onShowSessionExpired}
+            onNavigateAuditLogs={() => navigate("/audit-log")}
+            onSessionExpired={onSessionExpired}
+            onAccessDenied={onAccessDenied}
+          />
+        }
+      />
+
+      <Route
+        path="/audit-log"
+        element={
+          isAdmin ? (
+            <AuditLogScreen
+              user={activeUser}
+              accessToken={accessToken}
+              onBack={() => navigate("/")}
+              onLogout={onLogout}
+              onShowSessionExpired={onShowSessionExpired}
+              onSessionExpired={onSessionExpired}
+              onAccessDenied={onAccessDenied}
+            />
+          ) : (
+            <AccessDeniedScreen onBack={() => navigate("/")} />
+          )
+        }
+      />
+
+      <Route path="/access-denied" element={<AccessDeniedScreen onBack={() => navigate("/")} />} />
+
+      <Route
+        path="/projects/:projectId"
+        element={
+          <ProjectLayout
+            user={activeUser}
+            accessToken={accessToken}
+            onLogout={onLogout}
+            onShowSessionExpired={onShowSessionExpired}
+            onSessionExpired={onSessionExpired}
+            onAccessDenied={onAccessDenied}
+          />
+        }
+      >
+        <Route index element={<ProjectOverviewRoute />} />
+        <Route path="apis" element={<ApiListRoute />} />
+        <Route path="apis/:apiId" element={<ApiDetailRoute />} />
+        <Route path="environments" element={<EnvironmentListRoute />} />
+        <Route path="members" element={<MembersRoute />} />
+      </Route>
+
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
+  );
+}
+
 export default function App() {
   const auth = useAuth();
-  const [screen, setScreen] = useState<Screen>("dashboard");
-  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
-  const [selectedProjectName, setSelectedProjectName] = useState("");
-
-  // Demo-mode bypass state (dev only) — completely independent of `auth` so
-  // demo controls can never be mistaken for evidence of real authentication.
   const [demoPhase, setDemoPhase] = useState<"idle" | "loading" | "error">("idle");
   const [demoError, setDemoError] = useState<LoginErrorType | null>(null);
 
@@ -129,7 +322,6 @@ export default function App() {
   useEffect(() => {
     if (auth.user && !wasAuthenticated.current) {
       wasAuthenticated.current = true;
-      setScreen("dashboard");
     }
     if (!auth.user) {
       wasAuthenticated.current = false;
@@ -140,7 +332,6 @@ export default function App() {
 
   function handleLogout() {
     setDemoPhase("idle");
-    setScreen("dashboard");
     void auth.signOut();
   }
 
@@ -175,69 +366,19 @@ export default function App() {
 
   const onShowSessionExpired = import.meta.env.DEV ? auth.debugShowSessionExpired : undefined;
   const isAdmin = activeUser.role === "ADMIN";
-  const onSessionExpired = auth.reportSessionExpired;
-  const onAccessDenied = () => setScreen("access-denied");
 
   return (
     <div style={{ height: "100vh", overflow: "hidden" }}>
-      {screen === "dashboard" && (
-        <ProjectListScreen
-          user={activeUser}
-          accessToken={auth.accessToken}
-          onSelectProject={(id) => { setSelectedProjectId(id); setScreen("project-detail"); }}
-          onLogout={handleLogout}
-          onShowSessionExpired={onShowSessionExpired}
-          onNavigateAuditLogs={() => setScreen("audit-log")}
-          onSessionExpired={onSessionExpired}
-          onAccessDenied={onAccessDenied}
-        />
-      )}
-
-      {screen === "project-detail" && selectedProjectId && (
-        <ProjectDetailScreen
-          user={activeUser}
-          projectId={selectedProjectId}
-          accessToken={auth.accessToken}
-          onBack={() => setScreen("dashboard")}
-          onLogout={handleLogout}
-          onMembersClick={(projectName) => { setSelectedProjectName(projectName); setScreen("members"); }}
-          onShowSessionExpired={onShowSessionExpired}
-          onSessionExpired={onSessionExpired}
-          onAccessDenied={onAccessDenied}
-        />
-      )}
-
-      {screen === "members" && selectedProjectId && (
-        <MembersScreen
-          user={activeUser}
-          projectId={selectedProjectId}
-          projectName={selectedProjectName}
-          accessToken={auth.accessToken}
-          onBack={() => setScreen("project-detail")}
-          onLogout={handleLogout}
-          onShowSessionExpired={onShowSessionExpired}
-          onSessionExpired={onSessionExpired}
-          onAccessDenied={onAccessDenied}
-        />
-      )}
-
-      {screen === "audit-log" && (isAdmin ? (
-        <AuditLogScreen
-          user={activeUser}
-          accessToken={auth.accessToken}
-          onBack={() => setScreen("dashboard")}
-          onLogout={handleLogout}
-          onShowSessionExpired={onShowSessionExpired}
-          onSessionExpired={onSessionExpired}
-          onAccessDenied={onAccessDenied}
-        />
-      ) : (
-        <AccessDeniedScreen onBack={() => setScreen("dashboard")} />
-      ))}
-
-      {screen === "access-denied" && <AccessDeniedScreen onBack={() => setScreen("dashboard")} />}
-
-      {auth.sessionExpired && <SessionExpiredModal onSignInAgain={auth.dismissSessionExpired} />}
+      <AuthenticatedApp
+        activeUser={activeUser}
+        isAdmin={isAdmin}
+        accessToken={auth.accessToken}
+        onLogout={handleLogout}
+        onShowSessionExpired={onShowSessionExpired}
+        onSessionExpired={auth.reportSessionExpired}
+        sessionExpired={auth.sessionExpired}
+        onSignInAgain={auth.dismissSessionExpired}
+      />
     </div>
   );
 }

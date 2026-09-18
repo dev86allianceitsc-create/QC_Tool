@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { Header } from "../../components/Header";
 import { ApiError } from "../../services/api-client";
 import { updateInvitedUserEmail } from "../users/users.api";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -12,14 +11,12 @@ type EditModalState = "default" | "loading" | "invalid" | "not-invited" | "dupli
 // Add Member / Edit Invitation / Remove from Project are ADMIN-only, per
 // PRJ-002/PRJ-003. Cancel Invitation has no sanctioned backend endpoint, so
 // INVITED rows use the same "Remove from Project" action as every other row.
+// Project-level Header/Back/tabs live in ProjectLayout.
 export function MembersScreen({
   user,
   projectId,
   projectName,
   accessToken,
-  onBack,
-  onLogout,
-  onShowSessionExpired,
   onSessionExpired,
   onAccessDenied,
 }: {
@@ -27,9 +24,6 @@ export function MembersScreen({
   projectId: string;
   projectName: string;
   accessToken: string | null;
-  onBack: () => void;
-  onLogout: () => void;
-  onShowSessionExpired?: () => void;
   onSessionExpired: () => void;
   onAccessDenied: () => void;
 }) {
@@ -115,13 +109,7 @@ export function MembersScreen({
   const removeTarget = members.find((m) => m.userId === showRemoveModal);
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100vh", backgroundColor: "#fff" }}>
-      <Header user={user} onLogout={onLogout} title="Project Members" onShowSessionExpired={onShowSessionExpired} />
-      <div style={{ padding: "10px 20px", borderBottom: "1px solid #ccc" }}>
-        <button onClick={onBack} style={{ padding: "6px 12px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer", marginRight: "10px" }}>
-          ← Back
-        </button>
-      </div>
+    <div>
       <div style={{ padding: "20px", borderBottom: "1px solid #ccc", display: "flex", gap: "10px", alignItems: "center" }}>
         <input type="text" placeholder="Search by email..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ padding: "8px", border: "1px solid #ccc", width: "250px" }} />
         <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as "ALL" | MemberStatus)} style={{ padding: "8px", border: "1px solid #ccc" }}>

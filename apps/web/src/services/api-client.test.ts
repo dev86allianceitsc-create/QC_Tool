@@ -102,4 +102,44 @@ describe("apiClient", () => {
       status: 403,
     });
   });
+
+  it("sends a PUT request with a JSON body", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockJsonResponse(200, { environmentId: "e1", fullUrl: "https://example.com" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await apiClient.put("/projects/p1/apis/a1/environment-configs/e1", { fullUrl: "https://example.com" }, "token-123");
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain("/projects/p1/apis/a1/environment-configs/e1");
+    expect(init.method).toBe("PUT");
+    expect(init.body).toBe(JSON.stringify({ fullUrl: "https://example.com" }));
+    expect(init.headers.Authorization).toBe("Bearer token-123");
+  });
+
+  it("postForm sends the FormData body directly with no explicit Content-Type header", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockJsonResponse(200, { totalCandidates: 0, items: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const form = new FormData();
+    form.append("file", new File(["{}"], "spec.json"));
+
+    await apiClient.postForm("/projects/p1/api-imports/preview", form, "token-123");
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toContain("/projects/p1/api-imports/preview");
+    expect(init.method).toBe("POST");
+    expect(init.body).toBe(form);
+    expect(init.headers["Content-Type"]).toBeUndefined();
+    expect(init.headers.Authorization).toBe("Bearer token-123");
+  });
+
+  it("postForm omits the Authorization header when no token is supplied", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockJsonResponse(200, { totalCandidates: 0, items: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await apiClient.postForm("/projects/p1/api-imports/preview", new FormData());
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.headers.Authorization).toBeUndefined();
+  });
 });

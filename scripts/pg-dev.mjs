@@ -33,6 +33,17 @@ function makeCluster() {
     user: USER,
     password: PASSWORD,
     persistent: true,
+    // embedded-postgres calls `initdb` with no --encoding/--locale of its
+    // own, so initdb falls back to whatever it detects from the OS. On
+    // Windows that detection reads the process ANSI codepage (GetACP()),
+    // which is commonly a legacy codepage like Windows-1252 rather than
+    // UTF-8 — so template0/template1 (and every database created from
+    // them, including qc_tool_dev) silently end up encoded as WIN1252.
+    // Force both explicitly so cluster creation is deterministic on any
+    // machine regardless of its OS locale/codepage: `C` is the one locale
+    // guaranteed to be available everywhere and is encoding-agnostic, so
+    // pairing it with `--encoding=UTF8` is always accepted by initdb.
+    initdbFlags: ["--encoding=UTF8", "--locale=C"],
   });
 }
 

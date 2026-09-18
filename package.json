@@ -18,6 +18,8 @@
     "db:stop": "node scripts/pg-dev.mjs stop",
     "db:verify": "node scripts/verify-schema.mjs",
     "db:verify-behavior": "node scripts/verify-db-behavior.mjs",
+    "db:verify-3b": "node scripts/verify-request-input-3b-schema.mjs",
+    "db:verify-behavior-3b": "node scripts/verify-request-input-3b-behavior.mjs",
     "db:seed": "node prisma/seed.mjs"
   },
   "devDependencies": {

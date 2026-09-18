@@ -34,8 +34,6 @@ function renderScreen(user: typeof ADMIN | typeof USER) {
       projectId="p1"
       projectName="Project A"
       accessToken="token-1"
-      onBack={vi.fn()}
-      onLogout={vi.fn()}
       onSessionExpired={vi.fn()}
       onAccessDenied={vi.fn()}
     />,

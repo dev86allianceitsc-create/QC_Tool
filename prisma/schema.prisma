@@ -7,7 +7,26 @@
 // (status: IMPLEMENTATION READY - reviewed and frozen for current scope) and
 // document/database/Database_Standard_v2.0.docx.
 //
-// Scope: users, user_sessions, projects, project_memberships, audit_logs.
+// Group 3A — API & Environment Core implementation.
+// Source of truth: document/database/AnD_Database_API_Environment_Core_3A.docx
+// (status: FINAL FOR 3A LOGICAL DESIGN) and document/database/Database_Standard_v2.0.docx.
+// Credential/secret persistence, request params/payload, API/DB version, and
+// Run/Snapshot/Comparison are explicitly deferred to Group 3B/3C — out of
+// scope here. No new roles/permissions tables — reuses users.system_role and
+// project_memberships (REQ-SEC-003 boundary).
+//
+// Group 3B — Request Input implementation.
+// Source of truth: document/database/AnD_Database_Request_Input_3B.docx
+// (status: FINAL/FROZEN DB baseline) and document/database/Database_Standard_v2.0.docx.
+// Adds Request Input Definition persistence (QUERY/HEADER parameters, JSON
+// Request Body definition) for an existing api_configurations row. Path
+// Parameters are explicitly NOT persisted — api_configurations.path remains
+// their sole source of truth (Section 5). Run Value, payload, credential and
+// Authentication data remain out of scope in 3B.
+//
+// Scope: users, user_sessions, projects, project_memberships, audit_logs,
+// api_configurations, environments, api_environment_configs,
+// request_parameter_definitions, request_body_definitions.
 
 datasource db {
   provider = "postgresql"
@@ -95,6 +114,8 @@ model Project {
 
   memberships ProjectMembership[]
   auditLogs   AuditLog[]
+  apis         ApiConfiguration[]
+  environments Environment[]
 
   @@index([projectStatus, deletedAt], map: "idx_projects_status_deleted")
   @@map("projects")
@@ -164,4 +185,171 @@ model AuditLog {
   @@index([actorUserId, occurredAt(sort: Desc)], map: "idx_audit_logs_actor_time")
   @@index([eventType, occurredAt(sort: Desc)], map: "idx_audit_logs_event_time")
   @@map("audit_logs")
+}
+
+// api_configurations — Database AnD (API & Environment Core 3A) Section 6.
+// Active business identity = project_id + http_method + path (api_name is
+// explicitly NOT part of it — REQ-FUN-002 FR-FUN-002-14/15). Soft delete via
+// deleted_at preserves Run/Snapshot/Comparison history (REQ-FUN-001
+// FR-FUN-001-09/10); a soft-deleted row must not block reuse of the same
+// Method+Path. The active-uniqueness partial index (ux_api_configurations_active,
+// scoped to deleted_at IS NULL) cannot be expressed declaratively in Prisma —
+// added via raw SQL in the migration, same convention as the CHECK
+// constraints below.
+model ApiConfiguration {
+  apiId String @id @default(uuid()) @map("api_id") @db.Uuid
+
+  projectId String  @map("project_id") @db.Uuid
+  project   Project @relation(fields: [projectId], references: [projectId], onDelete: Restrict)
+
+  apiName    String  @map("api_name") @db.VarChar(255)
+  httpMethod String  @map("http_method") @db.VarChar(10)
+  path       String  @db.VarChar(2048)
+  description String? @db.Text
+
+  // creation_source domain: MANUAL | OPENAPI_IMPORT (REQ-FUN-002). Enforced
+  // via raw CHECK ck_api_configurations_creation_source, not modeled here.
+  creationSource String @map("creation_source") @db.VarChar(30)
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+  // Soft delete. NULL = active. No deleted_by column (same convention as
+  // projects — delete actor traced through audit_logs).
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz
+  note      String?   @db.Text
+
+  configs ApiEnvironmentConfig[]
+
+  parameterDefinitions RequestParameterDefinition[]
+  bodyDefinition       RequestBodyDefinition?
+
+  @@index([projectId, deletedAt], map: "idx_api_configurations_project_deleted")
+  @@map("api_configurations")
+}
+
+// environments — Database AnD (API & Environment Core 3A) Section 7/8.
+// Identity within a Project = project_id + environment_name (unique,
+// case-insensitive after trim — REQ-ENV-001 FR-ENV-001-05/06 — including
+// INACTIVE rows). No hard delete; ACTIVE/INACTIVE lifecycle only
+// (environment_status), independent of allow_run (REQ-ENV-003). The
+// case-insensitive unique index (ux_environments_project_name_ci) cannot be
+// expressed declaratively in Prisma — added via raw SQL in the migration.
+// classification (PRODUCTION/NON_PRODUCTION) is independent of
+// environment_name (REQ-ENV-001 FR-ENV-001-12); default Allow Run
+// ON/OFF-by-classification and the atomic non-Prod->Prod OFF-forcing
+// transition (REQ-ENV-003) are application business logic, not DB defaults.
+model Environment {
+  environmentId String @id @default(uuid()) @map("environment_id") @db.Uuid
+
+  projectId String  @map("project_id") @db.Uuid
+  project   Project @relation(fields: [projectId], references: [projectId], onDelete: Restrict)
+
+  environmentName String @map("environment_name") @db.VarChar(100)
+
+  // classification domain: PRODUCTION | NON_PRODUCTION. Enforced via raw
+  // CHECK ck_environments_classification, not modeled here.
+  classification String @db.VarChar(20)
+
+  allowRun Boolean @map("allow_run")
+
+  // environment_status domain: ACTIVE | INACTIVE. Enforced via raw CHECK
+  // ck_environments_environment_status, not modeled here.
+  environmentStatus String @map("environment_status") @db.VarChar(20)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+  note      String?  @db.Text
+
+  configs ApiEnvironmentConfig[]
+
+  @@index([projectId], map: "idx_environments_project_id")
+  @@map("environments")
+}
+
+// api_environment_configs — Database AnD (API & Environment Core 3A) Section 9,
+// DEC-3A-DB-001 (CONFIRMED): no row = Not configured; a row exists only after
+// Full URL is successfully saved, so full_url is NOT NULL. Relationship
+// identity = (api_id, environment_id). FK delete behavior kept RESTRICT
+// (not CASCADE) per the frozen AnD's history-preserving instruction
+// (TBD-3A-DB-002 — exact downstream Run/Snapshot behavior deferred, but
+// CASCADE is explicitly disallowed in the interim).
+model ApiEnvironmentConfig {
+  apiId         String           @map("api_id") @db.Uuid
+  api           ApiConfiguration @relation(fields: [apiId], references: [apiId], onDelete: Restrict)
+  environmentId String           @map("environment_id") @db.Uuid
+  environment   Environment      @relation(fields: [environmentId], references: [environmentId], onDelete: Restrict)
+
+  fullUrl String @map("full_url") @db.VarChar(4096)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+  note      String?  @db.Text
+
+  @@id([apiId, environmentId], map: "pk_api_environment_configs")
+  @@index([environmentId], map: "idx_api_environment_configs_environment_id")
+  @@map("api_environment_configs")
+}
+
+// request_parameter_definitions — Database AnD (Request Input 3B) Section 6/7/12.
+// Definition-only: QUERY/HEADER parameter name + Required/Optional state that
+// the User configures for an API. No Run Value, credential, default value or
+// advanced schema metadata (REQ-INP-003 RS-06/BR-INP-003-24; REQ-INP-004).
+// PATH parameters are intentionally NOT modeled here — api_configurations.path
+// remains their sole source of truth (Section 5, DB-STD-02 Single Source of
+// Truth). Definition is API-level and shared across Environments (no
+// environment_id column — BR-INP-003-21/25).
+//
+// Uniqueness (DB-3B-PAR-01..04) needs two different case sensitivities for
+// the same (api_id, parameter_name) shape depending on location, which
+// Prisma's declarative `@@unique` cannot express as partial/functional
+// indexes — added via raw SQL in the migration:
+//   - QUERY: case-sensitive unique on (api_id, parameter_name)
+//   - HEADER: case-insensitive unique on (api_id, lower(parameter_name))
+// A QUERY and a HEADER definition may share the same spelling because
+// location is part of the uniqueness boundary (DB-3B-PAR-04).
+model RequestParameterDefinition {
+  requestParameterDefinitionId String @id @default(uuid()) @map("request_parameter_definition_id") @db.Uuid
+
+  apiId String           @map("api_id") @db.Uuid
+  api   ApiConfiguration @relation(fields: [apiId], references: [apiId], onDelete: Restrict)
+
+  // location domain: QUERY | HEADER. Enforced via raw CHECK
+  // ck_request_parameter_definitions_location, not modeled here. PATH/BODY
+  // are never persisted as parameter rows (Section 12).
+  location String @db.VarChar(20)
+
+  parameterName String @map("parameter_name") @db.VarChar(255)
+
+  isRequired Boolean @map("is_required")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+  note      String?  @db.Text
+
+  @@index([apiId, location], map: "idx_request_parameter_definitions_api_id_location")
+  @@map("request_parameter_definitions")
+}
+
+// request_body_definitions — Database AnD (Request Input 3B) Section 8/9/12.
+// 0..1 per API (api_id UNIQUE): whether the API has a Request Body and which
+// Body Type. MVP supports only body_type = JSON; the field is named
+// generically so future body types can be added by a controlled migration
+// without renaming (AD-INP-005-01). Never stores the JSON payload itself —
+// Run Payload persistence belongs to Run/Snapshot scope (REQ-INP-004/005).
+model RequestBodyDefinition {
+  requestBodyDefinitionId String @id @default(uuid()) @map("request_body_definition_id") @db.Uuid
+
+  apiId String           @unique @map("api_id") @db.Uuid
+  api   ApiConfiguration @relation(fields: [apiId], references: [apiId], onDelete: Restrict)
+
+  // body_type domain: JSON only in MVP. Enforced via raw CHECK
+  // ck_request_body_definitions_body_type, not modeled here. Generic naming
+  // per AD-INP-005-01 to allow controlled future expansion.
+  bodyType String @map("body_type") @db.VarChar(30)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+  note      String?  @db.Text
+
+  @@map("request_body_definitions")
 }

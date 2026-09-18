@@ -1,0 +1,37 @@
+openapi: 3.0.3
+
+info:
+  title: QC Tool Sample API
+  version: 1.0.0
+
+paths:
+  /users:
+    get:
+      summary: Lấy danh sách người dùng
+      operationId: getUsers
+      responses:
+        "200":
+          description: Thành công
+
+    post:
+      summary: Tạo người dùng
+      operationId: createUser
+      responses:
+        "201":
+          description: Tạo thành công
+
+  /users/{id}:
+    get:
+      summary: Lấy người dùng theo ID
+      operationId: getUserById
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Thành công
+        "404":
+          description: Không tìm thấy

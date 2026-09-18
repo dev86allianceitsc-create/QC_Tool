@@ -1,0 +1,126 @@
+import { useState } from "react";
+import { ApiError } from "../../services/api-client";
+import { ParameterDefinitionDialog } from "./ParameterDefinitionDialog";
+import { ParameterDefinitionTable } from "./ParameterDefinitionTable";
+import { PathParameterTable } from "./PathParameterTable";
+import { RequestBodyDefinitionCard } from "./RequestBodyDefinitionCard";
+import type { ParameterDefinition, ParameterLocation, PutRequestInputPayload, RequestInputDefinition } from "./requestInput.types";
+import { toPutPayload } from "./requestInput.util";
+
+type DialogState = { location: ParameterLocation; index: number | null } | null;
+
+// UI-INP-01: API Detail / Request Input tab. Manages the Request Input
+// Definition for this API (REQ-INP-001/003) — this screen never collects a
+// Run Value (BR-INP-003-10/20). "Save" commits the draft via the real PUT
+// endpoint (3B-12); on success the draft is re-baselined to the returned
+// canonical Definition, and on failure the draft is preserved untouched so
+// the user can correct and retry.
+export function RequestInputTab({
+  definition,
+  readOnly,
+  saving,
+  onSave,
+}: {
+  definition: RequestInputDefinition;
+  readOnly?: boolean;
+  saving?: boolean;
+  onSave: (payload: PutRequestInputPayload) => Promise<RequestInputDefinition>;
+}) {
+  const [draft, setDraft] = useState<RequestInputDefinition>(definition);
+  const [dialog, setDialog] = useState<DialogState>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  const dirty = draft !== definition;
+
+  function existingNames(location: ParameterLocation, excludeIndex: number | null): string[] {
+    const list = location === "QUERY" ? draft.queryParameters : draft.headerParameters;
+    return list.filter((_, i) => i !== excludeIndex).map((p) => p.name);
+  }
+
+  function handleDialogSave(value: ParameterDefinition) {
+    if (!dialog) return;
+    const key = dialog.location === "QUERY" ? "queryParameters" : "headerParameters";
+    setDraft((prev) => {
+      const list = [...prev[key]];
+      if (dialog.index === null) {
+        list.push(value);
+      } else {
+        list[dialog.index] = value;
+      }
+      return { ...prev, [key]: list };
+    });
+    setDialog(null);
+  }
+
+  function handleRemove(location: ParameterLocation, index: number) {
+    const key = location === "QUERY" ? "queryParameters" : "headerParameters";
+    setDraft((prev) => ({ ...prev, [key]: prev[key].filter((_, i) => i !== index) }));
+  }
+
+  function handleBodyToggle(enabled: boolean) {
+    setDraft((prev) => ({ ...prev, requestBody: enabled ? { bodyType: "JSON" } : null }));
+  }
+
+  async function handleSave() {
+    setSaveError(null);
+    try {
+      const saved = await onSave(toPutPayload(draft));
+      setDraft(saved);
+    } catch (err) {
+      setSaveError(err instanceof ApiError ? err.message : "Failed to save changes.");
+    }
+  }
+
+  function handleCancel() {
+    setDraft(definition);
+    setSaveError(null);
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
+      <PathParameterTable pathParameters={draft.pathParameters} />
+
+      <ParameterDefinitionTable
+        location="QUERY"
+        parameters={draft.queryParameters}
+        onAdd={() => setDialog({ location: "QUERY", index: null })}
+        onEdit={(index) => setDialog({ location: "QUERY", index })}
+        onRemove={(index) => handleRemove("QUERY", index)}
+      />
+
+      <ParameterDefinitionTable
+        location="HEADER"
+        parameters={draft.headerParameters}
+        onAdd={() => setDialog({ location: "HEADER", index: null })}
+        onEdit={(index) => setDialog({ location: "HEADER", index })}
+        onRemove={(index) => handleRemove("HEADER", index)}
+      />
+
+      <RequestBodyDefinitionCard enabled={draft.requestBody !== null} onToggle={handleBodyToggle} />
+
+      {!readOnly && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+          {saveError && <p style={{ color: "red", margin: 0 }}>{saveError}</p>}
+          <div style={{ display: "flex", gap: "10px" }}>
+            <button onClick={handleCancel} disabled={!dirty} style={{ padding: "10px 16px", border: "1px solid #000", backgroundColor: "#fff", cursor: dirty ? "pointer" : "not-allowed", opacity: dirty ? 1 : 0.5 }}>
+              Cancel changes
+            </button>
+            <button onClick={() => void handleSave()} disabled={!dirty || saving} style={{ padding: "10px 16px", border: "1px solid #000", backgroundColor: "#fff", cursor: dirty && !saving ? "pointer" : "not-allowed", opacity: dirty && !saving ? 1 : 0.5 }}>
+              {saving ? "Saving..." : "Save"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {dialog && (
+        <ParameterDefinitionDialog
+          location={dialog.location}
+          initialValue={dialog.index === null ? undefined : (dialog.location === "QUERY" ? draft.queryParameters : draft.headerParameters)[dialog.index]}
+          existingNames={existingNames(dialog.location, dialog.index)}
+          onSave={handleDialogSave}
+          onCancel={() => setDialog(null)}
+        />
+      )}
+    </div>
+  );
+}
