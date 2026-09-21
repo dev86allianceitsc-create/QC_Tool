@@ -8,12 +8,14 @@ describe("ApiEnvironmentConfigsService", () => {
       apiConfiguration: { findFirst: jest.Mock };
       environment: { findMany: jest.Mock; findFirst: jest.Mock };
       apiEnvironmentConfig: { findMany: jest.Mock; findUnique: jest.Mock; upsert: jest.Mock };
+      authenticationConfiguration: { findMany: jest.Mock };
       project: { findFirst: jest.Mock };
       $transaction: jest.Mock;
     } = {
       apiConfiguration: { findFirst: jest.fn() },
       environment: { findMany: jest.fn().mockResolvedValue([]), findFirst: jest.fn() },
       apiEnvironmentConfig: { findMany: jest.fn().mockResolvedValue([]), findUnique: jest.fn(), upsert: jest.fn() },
+      authenticationConfiguration: { findMany: jest.fn().mockResolvedValue([]) },
       project: { findFirst: jest.fn().mockResolvedValue({ projectId: "p-1", projectStatus: "ACTIVE", deletedAt: null }) },
       $transaction: jest.fn(async (cb: (tx: unknown) => unknown) => cb(prisma)),
     };
@@ -37,7 +39,29 @@ describe("ApiEnvironmentConfigsService", () => {
         expect.objectContaining({ environmentId: "e-1", urlStatus: "CONFIGURED", fullUrl: "https://a.example.com" }),
         expect.objectContaining({ environmentId: "e-2", urlStatus: "NOT_CONFIGURED", fullUrl: null }),
       ]);
-      expect(result.items.every((i) => i.credentialStatus === "UNAVAILABLE_IN_3A")).toBe(true);
+      expect(result.items.every((i) => i.credentialStatus === "NOT_REQUIRED")).toBe(true);
+    });
+
+    it("computes credentialStatus per Environment from authentication_configurations (Group 3C)", async () => {
+      const { service, prisma } = makeService();
+      prisma.apiConfiguration.findFirst.mockResolvedValue({ apiId: "a-1", apiName: "X" });
+      prisma.environment.findMany.mockResolvedValue([
+        { environmentId: "e-1", environmentName: "Dev", classification: "NON_PRODUCTION", environmentStatus: "ACTIVE", allowRun: true },
+        { environmentId: "e-2", environmentName: "Uat", classification: "NON_PRODUCTION", environmentStatus: "ACTIVE", allowRun: true },
+        { environmentId: "e-3", environmentName: "Prod", classification: "PRODUCTION", environmentStatus: "ACTIVE", allowRun: false },
+      ]);
+      prisma.authenticationConfiguration.findMany.mockResolvedValue([
+        { environmentId: "e-1", authType: "LOGIN_FORM", passwordCiphertext: Buffer.from("ct"), bearerTokenCiphertext: null },
+        { environmentId: "e-2", authType: "BEARER_TOKEN", passwordCiphertext: null, bearerTokenCiphertext: null },
+      ]);
+
+      const result = await service.list("p-1", "a-1");
+
+      expect(result.items).toEqual([
+        expect.objectContaining({ environmentId: "e-1", credentialStatus: "CONFIGURED" }),
+        expect.objectContaining({ environmentId: "e-2", credentialStatus: "NOT_CONFIGURED" }),
+        expect.objectContaining({ environmentId: "e-3", credentialStatus: "NOT_REQUIRED" }),
+      ]);
     });
   });
 

@@ -1,6 +1,9 @@
 import { useState } from "react";
 import type { ParameterDefinition, ParameterLocation } from "./requestInput.types";
 import { isDuplicateName, isReservedHeaderName, validateParameterNameFormat } from "./requestInput.util";
+import { Button } from "../../components/ui/Button";
+import { Input } from "../../components/ui/Input";
+import { Modal } from "../../components/ui/Modal";
 
 // UI-INP-06: reusable Add/Edit dialog for Query and Header Definitions.
 // Client-side validation is UX only (§3.2/§3.3) — the backend remains
@@ -46,39 +49,39 @@ export function ParameterDefinitionDialog({
   }
 
   return (
-    <div style={{ position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", backgroundColor: "rgba(0,0,0,0.5)" }}>
-      <div style={{ backgroundColor: "#fff", border: "1px solid #000", padding: "20px", width: "380px" }}>
-        <h3>{initialValue ? `Edit ${locationLabel} Parameter` : `Add ${locationLabel} Parameter`}</h3>
-        <label style={{ display: "block", marginBottom: "10px" }}>
-          <span style={{ display: "block", marginBottom: "5px", fontWeight: "bold" }}>Name *</span>
-          <input
-            type="text"
-            value={name}
-            onChange={(e) => { setName(e.target.value); setError(null); }}
-            placeholder={location === "QUERY" ? "status" : "X-Client-ID"}
-            style={{ width: "100%", padding: "8px", border: "1px solid #ccc", boxSizing: "border-box" }}
-          />
-        </label>
-        <fieldset style={{ border: "1px solid #ccc", padding: "10px", marginBottom: "10px" }}>
-          <legend style={{ fontWeight: "bold", fontSize: "13px" }}>Requirement</legend>
-          <label style={{ display: "block", marginBottom: "5px" }}>
-            <input type="radio" checked={required} onChange={() => setRequired(true)} /> Required
-          </label>
-          <label style={{ display: "block" }}>
-            <input type="radio" checked={!required} onChange={() => setRequired(false)} /> Optional
-          </label>
-        </fieldset>
-        <p style={{ color: "#666", fontSize: "12px" }}>No value is stored here. Value is entered when preparing a Run.</p>
-        {error && <p style={{ color: "red", fontSize: "12px" }}>{error}</p>}
-        <div style={{ display: "flex", gap: "10px" }}>
-          <button onClick={onCancel} style={{ flex: 1, padding: "10px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
-            Cancel
-          </button>
-          <button onClick={handleSave} style={{ flex: 1, padding: "10px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
-            {initialValue ? "Save Changes" : "Add Parameter"}
-          </button>
-        </div>
+    <Modal title={initialValue ? `Edit ${locationLabel} Parameter` : `Add ${locationLabel} Parameter`} width="380px">
+      <div className="mb-3">
+        <Input
+          label="Name *"
+          type="text"
+          value={name}
+          onChange={(e) => {
+            setName(e.target.value);
+            setError(null);
+          }}
+          placeholder={location === "QUERY" ? "status" : "X-Client-ID"}
+          className="font-mono"
+        />
       </div>
-    </div>
+      <fieldset className="mb-3 rounded-md border border-border p-2.5">
+        <legend className="px-1 text-xs font-semibold text-gray-900">Requirement</legend>
+        <label className="mb-1.5 flex items-center gap-1.5 text-sm text-gray-900">
+          <input type="radio" checked={required} onChange={() => setRequired(true)} /> Required
+        </label>
+        <label className="flex items-center gap-1.5 text-sm text-gray-900">
+          <input type="radio" checked={!required} onChange={() => setRequired(false)} /> Optional
+        </label>
+      </fieldset>
+      <p className="text-xs text-muted">No value is stored here. Value is entered when preparing a Run.</p>
+      {error && <p className="text-xs text-error">{error}</p>}
+      <div className="mt-3 flex gap-2.5">
+        <Button variant="secondary" className="flex-1" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button variant="primary" className="flex-1" onClick={handleSave}>
+          {initialValue ? "Save Changes" : "Add Parameter"}
+        </Button>
+      </div>
+    </Modal>
   );
 }

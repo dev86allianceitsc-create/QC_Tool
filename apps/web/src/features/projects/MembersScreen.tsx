@@ -4,6 +4,10 @@ import { updateInvitedUserEmail } from "../users/users.api";
 import { ConfirmDialog } from "./ConfirmDialog";
 import type { MemberStatus, Role } from "./projects.types";
 import { useProjectMembers } from "./useProjectMembers";
+import { Button } from "../../components/ui/Button";
+import { Input } from "../../components/ui/Input";
+import { Modal } from "../../components/ui/Modal";
+import { thClass, tdClass, trHoverClass } from "../../components/ui/table";
 
 type AddModalState = "default" | "loading" | "success" | "invalid" | "duplicate" | "blocked" | "error";
 type EditModalState = "default" | "loading" | "invalid" | "not-invited" | "duplicate" | "error";
@@ -110,9 +114,19 @@ export function MembersScreen({
 
   return (
     <div>
-      <div style={{ padding: "20px", borderBottom: "1px solid #ccc", display: "flex", gap: "10px", alignItems: "center" }}>
-        <input type="text" placeholder="Search by email..." value={search} onChange={(e) => setSearch(e.target.value)} style={{ padding: "8px", border: "1px solid #ccc", width: "250px" }} />
-        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as "ALL" | MemberStatus)} style={{ padding: "8px", border: "1px solid #ccc" }}>
+      <div className="flex items-center gap-2.5 border-b border-border p-5">
+        <input
+          type="text"
+          placeholder="Search by email..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="w-[250px] rounded-md border border-border px-3 py-2 text-sm text-gray-900 placeholder:text-muted focus:border-gray-400 focus:outline-none"
+        />
+        <select
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value as "ALL" | MemberStatus)}
+          className="rounded-md border border-border bg-white px-3 py-2 text-sm text-gray-900 focus:border-gray-400 focus:outline-none"
+        >
           <option value="ALL">All Statuses</option>
           <option value="ACTIVE">ACTIVE</option>
           <option value="INVITED">INVITED</option>
@@ -120,40 +134,64 @@ export function MembersScreen({
           <option value="BLOCKED">BLOCKED</option>
         </select>
         {isAdmin && (
-          <button onClick={() => { setShowAddModal(true); setAddModalState("default"); setNewEmail(""); }} style={{ padding: "8px 12px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer", marginLeft: "auto" }}>
+          <Button
+            variant="primary"
+            className="ml-auto"
+            onClick={() => {
+              setShowAddModal(true);
+              setAddModalState("default");
+              setNewEmail("");
+            }}
+          >
             + Add Member
-          </button>
+          </Button>
         )}
       </div>
-      <div style={{ flex: 1, padding: "20px", overflow: "auto" }}>
-        {loading && <p>Loading members...</p>}
-        {error && <p style={{ color: "red" }}>{error}</p>}
+      <div className="flex-1 overflow-auto p-5">
+        {loading && <p className="text-sm text-muted">Loading members...</p>}
+        {error && <p className="text-sm text-error">{error}</p>}
         {!loading && !error && (
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <table className="w-full border-collapse">
             <thead>
-              <tr style={{ borderBottom: "2px solid #000" }}>
-                <th style={{ textAlign: "left", padding: "10px", borderBottom: "1px solid #ccc" }}>Email</th>
-                <th style={{ textAlign: "left", padding: "10px", borderBottom: "1px solid #ccc" }}>Role</th>
-                <th style={{ textAlign: "left", padding: "10px", borderBottom: "1px solid #ccc" }}>Status</th>
-                {isAdmin && <th style={{ padding: "10px", borderBottom: "1px solid #ccc" }}>Actions</th>}
+              <tr>
+                <th className={thClass}>Email</th>
+                <th className={thClass}>Role</th>
+                <th className={thClass}>Status</th>
+                {isAdmin && <th className={`${thClass} text-center`}>Actions</th>}
               </tr>
             </thead>
             <tbody>
               {members.map((m) => (
-                <tr key={m.userId} style={{ borderBottom: "1px solid #ccc" }}>
-                  <td style={{ padding: "10px" }}>{m.email}</td>
-                  <td style={{ padding: "10px" }}>{m.systemRole}</td>
-                  <td style={{ padding: "10px" }}>{m.accountStatus}</td>
+                <tr key={m.userId} className={trHoverClass}>
+                  <td className={tdClass}>{m.email}</td>
+                  <td className={tdClass}>{m.systemRole}</td>
+                  <td className={tdClass}>{m.accountStatus}</td>
                   {isAdmin && (
-                    <td style={{ padding: "10px", textAlign: "center" }}>
+                    <td className={`${tdClass} text-center`}>
                       {m.accountStatus === "INVITED" && (
-                        <button onClick={() => { setShowEditModal(m.userId); setEditEmail(m.email); setEditModalState("default"); }} style={{ padding: "4px 8px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer", marginRight: "5px" }}>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          className="mr-1.5"
+                          onClick={() => {
+                            setShowEditModal(m.userId);
+                            setEditEmail(m.email);
+                            setEditModalState("default");
+                          }}
+                        >
                           Edit Invitation
-                        </button>
+                        </Button>
                       )}
-                      <button onClick={() => { setRemoveError(null); setShowRemoveModal(m.userId); }} style={{ padding: "4px 8px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer", color: "red" }}>
+                      <Button
+                        variant="danger"
+                        size="sm"
+                        onClick={() => {
+                          setRemoveError(null);
+                          setShowRemoveModal(m.userId);
+                        }}
+                      >
                         Remove from Project
-                      </button>
+                      </Button>
                     </td>
                   )}
                 </tr>
@@ -164,64 +202,81 @@ export function MembersScreen({
       </div>
 
       {showAddModal && (
-        <div style={{ position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", backgroundColor: "rgba(0,0,0,0.5)" }}>
-          <div style={{ backgroundColor: "#fff", border: "1px solid #000", padding: "20px", width: "400px" }}>
-            <h3>Add Member</h3>
-            {addModalState === "success" ? (
-              <div style={{ textAlign: "center", padding: "20px 0" }}>
-                <p>Member added successfully</p>
-                <button onClick={() => { setShowAddModal(false); setAddModalState("default"); setNewEmail(""); }} style={{ padding: "10px 20px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
-                  Done
-                </button>
+        <Modal title="Add Member">
+          {addModalState === "success" ? (
+            <div className="py-5 text-center">
+              <p className="text-sm text-gray-900">Member added successfully</p>
+              <Button
+                variant="primary"
+                className="mt-3"
+                onClick={() => {
+                  setShowAddModal(false);
+                  setAddModalState("default");
+                  setNewEmail("");
+                }}
+              >
+                Done
+              </Button>
+            </div>
+          ) : (
+            <>
+              <div className="mb-3">
+                <Input
+                  label="Google Email *"
+                  type="email"
+                  value={newEmail}
+                  onChange={(e) => {
+                    setNewEmail(e.target.value);
+                    setAddModalState("default");
+                  }}
+                  placeholder="user@example.com"
+                />
               </div>
-            ) : (
-              <>
-                <label style={{ display: "block", marginBottom: "10px" }}>
-                  <span style={{ display: "block", marginBottom: "5px", fontWeight: "bold" }}>Google Email *</span>
-                  <input type="email" value={newEmail} onChange={(e) => { setNewEmail(e.target.value); setAddModalState("default"); }} placeholder="user@example.com" style={{ width: "100%", padding: "8px", border: "1px solid #ccc", boxSizing: "border-box" }} />
-                </label>
-                {addModalState === "invalid" && <p style={{ color: "red", fontSize: "12px" }}>Invalid email address</p>}
-                {addModalState === "duplicate" && <p style={{ color: "red", fontSize: "12px" }}>User already belongs to this project</p>}
-                {addModalState === "blocked" && <p style={{ color: "red", fontSize: "12px" }}>This account is blocked or inactive and cannot be added as a member</p>}
-                {addModalState === "error" && <p style={{ color: "red", fontSize: "12px" }}>Something went wrong while adding the member. Please try again.</p>}
-                {addModalState === "loading" && <p style={{ fontSize: "12px" }}>Adding member...</p>}
-                <div style={{ display: "flex", gap: "10px", marginTop: "15px" }}>
-                  <button onClick={() => setShowAddModal(false)} style={{ flex: 1, padding: "10px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
-                    Cancel
-                  </button>
-                  <button onClick={handleAddMember} disabled={addModalState === "loading"} style={{ flex: 1, padding: "10px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer", opacity: addModalState === "loading" ? 0.6 : 1 }}>
-                    Add Member
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
+              {addModalState === "invalid" && <p className="text-xs text-error">Invalid email address</p>}
+              {addModalState === "duplicate" && <p className="text-xs text-error">User already belongs to this project</p>}
+              {addModalState === "blocked" && <p className="text-xs text-error">This account is blocked or inactive and cannot be added as a member</p>}
+              {addModalState === "error" && <p className="text-xs text-error">Something went wrong while adding the member. Please try again.</p>}
+              {addModalState === "loading" && <p className="text-xs text-muted">Adding member...</p>}
+              <div className="mt-4 flex gap-2.5">
+                <Button variant="secondary" className="flex-1" onClick={() => setShowAddModal(false)}>
+                  Cancel
+                </Button>
+                <Button variant="primary" className="flex-1" onClick={handleAddMember} disabled={addModalState === "loading"}>
+                  Add Member
+                </Button>
+              </div>
+            </>
+          )}
+        </Modal>
       )}
 
       {showEditModal && (
-        <div style={{ position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", backgroundColor: "rgba(0,0,0,0.5)" }}>
-          <div style={{ backgroundColor: "#fff", border: "1px solid #000", padding: "20px", width: "400px" }}>
-            <h3>Edit Invitation</h3>
-            <label style={{ display: "block", marginBottom: "10px" }}>
-              <span style={{ display: "block", marginBottom: "5px", fontWeight: "bold" }}>Google Email</span>
-              <input type="email" value={editEmail} onChange={(e) => { setEditEmail(e.target.value); setEditModalState("default"); }} style={{ width: "100%", padding: "8px", border: "1px solid #ccc", boxSizing: "border-box" }} />
-            </label>
-            {editModalState === "invalid" && <p style={{ color: "red", fontSize: "12px" }}>Invalid email address</p>}
-            {editModalState === "not-invited" && <p style={{ color: "red", fontSize: "12px" }}>This invitation can no longer be edited</p>}
-            {editModalState === "duplicate" && <p style={{ color: "red", fontSize: "12px" }}>That email is already in use</p>}
-            {editModalState === "error" && <p style={{ color: "red", fontSize: "12px" }}>Something went wrong. Please try again.</p>}
-            {editModalState === "loading" && <p style={{ fontSize: "12px" }}>Saving...</p>}
-            <div style={{ display: "flex", gap: "10px" }}>
-              <button onClick={() => setShowEditModal(null)} style={{ flex: 1, padding: "10px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
-                Cancel
-              </button>
-              <button onClick={handleSaveEditInvitation} disabled={editModalState === "loading"} style={{ flex: 1, padding: "10px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
-                Save
-              </button>
-            </div>
+        <Modal title="Edit Invitation">
+          <div className="mb-3">
+            <Input
+              label="Google Email"
+              type="email"
+              value={editEmail}
+              onChange={(e) => {
+                setEditEmail(e.target.value);
+                setEditModalState("default");
+              }}
+            />
           </div>
-        </div>
+          {editModalState === "invalid" && <p className="text-xs text-error">Invalid email address</p>}
+          {editModalState === "not-invited" && <p className="text-xs text-error">This invitation can no longer be edited</p>}
+          {editModalState === "duplicate" && <p className="text-xs text-error">That email is already in use</p>}
+          {editModalState === "error" && <p className="text-xs text-error">Something went wrong. Please try again.</p>}
+          {editModalState === "loading" && <p className="text-xs text-muted">Saving...</p>}
+          <div className="mt-4 flex gap-2.5">
+            <Button variant="secondary" className="flex-1" onClick={() => setShowEditModal(null)}>
+              Cancel
+            </Button>
+            <Button variant="primary" className="flex-1" onClick={handleSaveEditInvitation} disabled={editModalState === "loading"}>
+              Save
+            </Button>
+          </div>
+        </Modal>
       )}
 
       {removeTarget && (

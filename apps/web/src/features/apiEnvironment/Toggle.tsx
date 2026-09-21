@@ -19,29 +19,12 @@ export function Toggle({
       disabled={disabled}
       onClick={() => onChange(!checked)}
       title={label}
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        width: "40px",
-        height: "20px",
-        padding: "2px",
-        border: "1px solid #000",
-        borderRadius: "10px",
-        backgroundColor: checked ? "#000" : "#fff",
-        cursor: disabled ? "not-allowed" : "pointer",
-        opacity: disabled ? 0.4 : 1,
-        boxSizing: "border-box",
-      }}
+      className={`box-border inline-flex h-5 w-10 items-center rounded-full border p-0.5 transition-colors ${
+        checked ? "border-primary bg-primary" : "border-border-strong bg-white"
+      } ${disabled ? "cursor-not-allowed opacity-40" : "cursor-pointer"}`}
     >
       <span
-        style={{
-          width: "14px",
-          height: "14px",
-          borderRadius: "50%",
-          backgroundColor: checked ? "#fff" : "#000",
-          transform: checked ? "translateX(18px)" : "translateX(0)",
-          transition: "transform 0.15s ease",
-        }}
+        className={`h-3.5 w-3.5 rounded-full transition-transform ${checked ? "translate-x-[18px] bg-white" : "translate-x-0 bg-gray-900"}`}
       />
     </button>
   );

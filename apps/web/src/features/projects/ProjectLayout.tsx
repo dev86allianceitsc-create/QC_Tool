@@ -1,7 +1,10 @@
+import { useState } from "react";
 import { Outlet, useLocation, useNavigate, useParams } from "react-router-dom";
 import { Header } from "../../components/Header";
 import type { Role } from "./projects.types";
 import { useProjectDetail } from "./useProjectDetail";
+import { useProjectsList } from "./useProjectsList";
+import { Button } from "../../components/ui/Button";
 
 export interface ProjectLayoutContext {
   user: { email: string; role: Role };
@@ -15,12 +18,14 @@ export interface ProjectLayoutContext {
   onAccessDenied: () => void;
 }
 
-const TABS = [
-  { key: "overview", label: "Overview", path: "" },
-  { key: "apis", label: "APIs", path: "/apis" },
+const SETTINGS_TABS = [
   { key: "environments", label: "Environments", path: "/environments" },
   { key: "members", label: "Members", path: "/members" },
 ] as const;
+
+const TAB_CLASS = "border-b-2 border-transparent px-5 py-2.5 text-sm text-gray-600 hover:bg-gray-50";
+const TAB_ACTIVE_CLASS = "border-b-2 border-primary px-5 py-2.5 text-sm font-semibold text-gray-900";
+const DISABLED_TAB_CLASS = "cursor-not-allowed border-b-2 border-transparent px-5 py-2.5 text-sm text-muted";
 
 // Persistent Project-level chrome (Header + tab bar) shared by Overview,
 // APIs, Environments, Members and API Detail so the tabs never disappear
@@ -44,13 +49,15 @@ export function ProjectLayout({
   const navigate = useNavigate();
   const location = useLocation();
   const { project, loading, error } = useProjectDetail(projectId ?? null, accessToken, onSessionExpired, onAccessDenied);
+  const { projects } = useProjectsList(accessToken, onSessionExpired, onAccessDenied);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   if (loading) {
     return (
-      <div style={{ display: "flex", flexDirection: "column", height: "100vh", backgroundColor: "#fff" }}>
+      <div className="flex h-full flex-col bg-white">
         <Header user={user} onLogout={onLogout} title="Loading..." onShowSessionExpired={onShowSessionExpired} />
-        <div style={{ flex: 1, padding: "20px" }}>
-          <p>Loading project...</p>
+        <div className="flex-1 p-5">
+          <p className="text-sm text-muted">Loading project...</p>
         </div>
       </div>
     );
@@ -58,51 +65,89 @@ export function ProjectLayout({
 
   if (error || !project || !projectId) {
     return (
-      <div style={{ display: "flex", flexDirection: "column", height: "100vh", backgroundColor: "#fff" }}>
+      <div className="flex h-full flex-col bg-white">
         <Header user={user} onLogout={onLogout} title="Project" onShowSessionExpired={onShowSessionExpired} />
-        <div style={{ flex: 1, padding: "20px" }}>
-          <p style={{ color: "red" }}>{error ?? "Project not found."}</p>
-          <button onClick={() => navigate("/")} style={{ padding: "6px 12px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
+        <div className="flex-1 p-5">
+          <p className="text-sm text-error">{error ?? "Project not found."}</p>
+          <Button variant="secondary" size="sm" className="mt-3" onClick={() => navigate("/projects")}>
             ← Back to Projects
-          </button>
+          </Button>
         </div>
       </div>
     );
   }
 
   const basePath = `/projects/${projectId}`;
-  const activeTab = TABS.slice()
-    .reverse()
-    .find((tab) => location.pathname === `${basePath}${tab.path}` || (tab.path !== "" && location.pathname.startsWith(`${basePath}${tab.path}`)))
-    ?.key ?? "overview";
+  const isSettingsPath = SETTINGS_TABS.some((tab) => location.pathname.startsWith(`${basePath}${tab.path}`));
+  const activeTab: "overview" | "apis" | "settings" = isSettingsPath
+    ? "settings"
+    : location.pathname.startsWith(`${basePath}/apis`)
+      ? "apis"
+      : "overview";
+
+  function goTo(path: string) {
+    setSettingsOpen(false);
+    navigate(`${basePath}${path}`);
+  }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100vh", backgroundColor: "#fff" }}>
-      <Header user={user} onLogout={onLogout} title={project.projectName} onShowSessionExpired={onShowSessionExpired} />
-      <div style={{ padding: "10px 20px", borderBottom: "1px solid #ccc" }}>
-        <button onClick={() => navigate("/")} style={{ padding: "6px 12px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
+    <div className="flex h-full flex-col bg-white">
+      <Header
+        user={user}
+        onLogout={onLogout}
+        title={project.projectName}
+        onShowSessionExpired={onShowSessionExpired}
+        projectSwitcher={{
+          projects,
+          currentProjectId: projectId,
+          onSelect: (id) => navigate(`/projects/${id}`),
+        }}
+      />
+      <div className="border-b border-border px-5 py-2.5">
+        <Button variant="ghost" size="sm" onClick={() => navigate("/projects")}>
           ← Back to Projects
+        </Button>
+      </div>
+      <div className="flex border-b border-border">
+        <button onClick={() => goTo("")} className={activeTab === "overview" ? TAB_ACTIVE_CLASS : TAB_CLASS}>
+          Overview
+        </button>
+        <button onClick={() => goTo("/apis")} className={activeTab === "apis" ? TAB_ACTIVE_CLASS : TAB_CLASS}>
+          APIs
+        </button>
+        <div className="relative">
+          <button
+            onClick={() => setSettingsOpen((v) => !v)}
+            className={activeTab === "settings" ? TAB_ACTIVE_CLASS : TAB_CLASS}
+            style={{ fontWeight: activeTab === "settings" ? "bold" : "normal" }}
+          >
+            Project Settings ▾
+          </button>
+          {settingsOpen && (
+            <div className="absolute left-0 top-full z-10 min-w-[160px] rounded-md border border-border bg-white shadow-lg">
+              {SETTINGS_TABS.map((tab) => {
+                const subActive = location.pathname.startsWith(`${basePath}${tab.path}`);
+                return (
+                  <button
+                    key={tab.key}
+                    onClick={() => goTo(tab.path)}
+                    className={`block w-full px-5 py-2.5 text-left text-sm hover:bg-gray-50 ${subActive ? "font-semibold text-gray-900" : "text-gray-700"}`}
+                  >
+                    {tab.label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+        <button disabled title="Coming later — not part of this release." className={DISABLED_TAB_CLASS}>
+          Test Runs
+        </button>
+        <button disabled title="Coming later — not part of this release." className={DISABLED_TAB_CLASS}>
+          Comparisons
         </button>
       </div>
-      <div style={{ display: "flex", borderBottom: "1px solid #ccc" }}>
-        {TABS.map((tab) => (
-          <button
-            key={tab.key}
-            onClick={() => navigate(`${basePath}${tab.path}`)}
-            style={{
-              padding: "10px 20px",
-              border: "none",
-              borderBottom: activeTab === tab.key ? "2px solid #000" : "none",
-              backgroundColor: "#fff",
-              cursor: "pointer",
-              fontWeight: activeTab === tab.key ? "bold" : "normal",
-            }}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </div>
-      <div style={{ flex: 1, overflow: "auto" }}>
+      <div className="flex-1 overflow-auto">
         <Outlet
           context={{
             user,

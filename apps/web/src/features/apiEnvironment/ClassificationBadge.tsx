@@ -1,26 +1,14 @@
 import type { EnvironmentClassification } from "./apiEnvironment.types";
+import { Badge, type BadgeTone } from "../../components/ui/Badge";
 
-// Same lookup-table pattern as ../projects/StatusBadge.tsx.
-const CLASSIFICATION_STYLES: Record<EnvironmentClassification, { bg: string; color: string; label: string }> = {
-  PRODUCTION: { bg: "#FEF2F4", color: "#C41230", label: "Production" },
-  NON_PRODUCTION: { bg: "#F3F4F6", color: "#6B7280", label: "Non-Production" },
+// Classification is not a danger/error signal — PRODUCTION keeps its own
+// distinct (non-error) accent so it never reads as a validation failure.
+const CLASSIFICATION_STYLES: Record<EnvironmentClassification, { tone: BadgeTone; label: string }> = {
+  PRODUCTION: { tone: "info", label: "Production" },
+  NON_PRODUCTION: { tone: "neutral", label: "Non-Production" },
 };
 
 export function ClassificationBadge({ classification }: { classification: EnvironmentClassification }) {
   const style = CLASSIFICATION_STYLES[classification];
-  return (
-    <span
-      style={{
-        display: "inline-block",
-        padding: "2px 10px",
-        borderRadius: "12px",
-        fontSize: "11px",
-        fontWeight: "bold",
-        backgroundColor: style.bg,
-        color: style.color,
-      }}
-    >
-      {style.label}
-    </span>
-  );
+  return <Badge tone={style.tone} label={style.label} />;
 }

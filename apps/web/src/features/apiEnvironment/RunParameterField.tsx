@@ -7,12 +7,14 @@ export function RunParameterField({
   value,
   onChange,
   autoFocus,
+  placeholder,
 }: {
   label: string;
   required: boolean;
   value: string;
   onChange: (value: string) => void;
   autoFocus?: boolean;
+  placeholder?: string;
 }) {
   const inputId = `run-param-${label}`;
   return (
@@ -27,6 +29,7 @@ export function RunParameterField({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         autoFocus={autoFocus}
+        placeholder={placeholder}
         style={{ width: "100%", padding: "8px", border: "1px solid #ccc", boxSizing: "border-box" }}
       />
     </label>

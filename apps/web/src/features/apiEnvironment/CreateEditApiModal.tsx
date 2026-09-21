@@ -1,5 +1,9 @@
 import { useState } from "react";
 import type { ApiDetail, ApiMethod } from "./apiEnvironment.types";
+import { Button } from "../../components/ui/Button";
+import { Input, Textarea } from "../../components/ui/Input";
+import { Modal } from "../../components/ui/Modal";
+import { Select } from "../../components/ui/Select";
 
 const METHODS: ApiMethod[] = ["GET", "POST", "PUT", "PATCH", "DELETE"];
 
@@ -41,58 +45,61 @@ export function CreateEditApiModal({
   const displayError = localError ?? error ?? null;
 
   return (
-    <div style={{ position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", backgroundColor: "rgba(0,0,0,0.5)" }}>
-      <div style={{ backgroundColor: "#fff", border: "1px solid #000", padding: "20px", width: "420px" }}>
-        <h3>{editing ? "Edit API" : "Create API"}</h3>
-        <label style={{ display: "block", marginBottom: "10px" }}>
-          <span style={{ display: "block", marginBottom: "5px", fontWeight: "bold" }}>API Name *</span>
-          <input
-            type="text"
-            value={name}
-            onChange={(e) => { setName(e.target.value); setLocalError(null); }}
-            style={{ width: "100%", padding: "8px", border: "1px solid #ccc", boxSizing: "border-box" }}
-          />
-        </label>
-        <div style={{ display: "flex", gap: "10px", marginBottom: "10px" }}>
-          <label style={{ display: "block", width: "120px" }}>
-            <span style={{ display: "block", marginBottom: "5px", fontWeight: "bold" }}>Method *</span>
-            <select value={method} onChange={(e) => { setMethod(e.target.value as ApiMethod); setLocalError(null); }} style={{ width: "100%", padding: "8px", border: "1px solid #ccc" }}>
-              {METHODS.map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label style={{ display: "block", flex: 1 }}>
-            <span style={{ display: "block", marginBottom: "5px", fontWeight: "bold" }}>Path *</span>
-            <input
-              type="text"
-              value={path}
-              onChange={(e) => { setPath(e.target.value); setLocalError(null); }}
-              placeholder="/orders/{id}"
-              style={{ width: "100%", padding: "8px", border: "1px solid #ccc", boxSizing: "border-box" }}
-            />
-          </label>
+    <Modal title={editing ? "Edit API" : "Create API"}>
+      <div className="mb-3">
+        <Input
+          label="API Name *"
+          type="text"
+          value={name}
+          onChange={(e) => {
+            setName(e.target.value);
+            setLocalError(null);
+          }}
+        />
+      </div>
+      <div className="mb-3 flex gap-2.5">
+        <div className="w-[120px]">
+          <Select
+            label="Method *"
+            value={method}
+            onChange={(e) => {
+              setMethod(e.target.value as ApiMethod);
+              setLocalError(null);
+            }}
+          >
+            {METHODS.map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </Select>
         </div>
-        <label style={{ display: "block", marginBottom: "10px" }}>
-          <span style={{ display: "block", marginBottom: "5px", fontWeight: "bold" }}>Description</span>
-          <textarea
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            style={{ width: "100%", padding: "8px", border: "1px solid #ccc", boxSizing: "border-box", minHeight: "60px" }}
+        <div className="flex-1">
+          <Input
+            label="Path *"
+            type="text"
+            value={path}
+            onChange={(e) => {
+              setPath(e.target.value);
+              setLocalError(null);
+            }}
+            placeholder="/orders/{id}"
+            className="font-mono"
           />
-        </label>
-        {displayError && <p style={{ color: "red", fontSize: "12px" }}>{displayError}</p>}
-        <div style={{ display: "flex", gap: "10px" }}>
-          <button onClick={onCancel} style={{ flex: 1, padding: "10px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
-            Cancel
-          </button>
-          <button onClick={handleSave} disabled={saving} style={{ flex: 1, padding: "10px", border: "1px solid #000", backgroundColor: "#fff", cursor: saving ? "not-allowed" : "pointer", opacity: saving ? 0.6 : 1 }}>
-            {saving ? "Saving..." : "Save"}
-          </button>
         </div>
       </div>
-    </div>
+      <div className="mb-3">
+        <Textarea label="Description" value={description} onChange={(e) => setDescription(e.target.value)} />
+      </div>
+      {displayError && <p className="text-xs text-error">{displayError}</p>}
+      <div className="flex gap-2.5">
+        <Button variant="secondary" className="flex-1" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button variant="primary" className="flex-1" onClick={handleSave} disabled={saving}>
+          {saving ? "Saving..." : "Save"}
+        </Button>
+      </div>
+    </Modal>
   );
 }

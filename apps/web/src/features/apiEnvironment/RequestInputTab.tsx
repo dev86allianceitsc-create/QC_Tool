@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ApiError } from "../../services/api-client";
 import { ParameterDefinitionDialog } from "./ParameterDefinitionDialog";
 import { ParameterDefinitionTable } from "./ParameterDefinitionTable";
@@ -6,6 +6,7 @@ import { PathParameterTable } from "./PathParameterTable";
 import { RequestBodyDefinitionCard } from "./RequestBodyDefinitionCard";
 import type { ParameterDefinition, ParameterLocation, PutRequestInputPayload, RequestInputDefinition } from "./requestInput.types";
 import { toPutPayload } from "./requestInput.util";
+import { Button } from "../../components/ui/Button";
 
 type DialogState = { location: ParameterLocation; index: number | null } | null;
 
@@ -20,17 +21,23 @@ export function RequestInputTab({
   readOnly,
   saving,
   onSave,
+  onDirtyChange,
 }: {
   definition: RequestInputDefinition;
   readOnly?: boolean;
   saving?: boolean;
   onSave: (payload: PutRequestInputPayload) => Promise<RequestInputDefinition>;
+  onDirtyChange?: (dirty: boolean) => void;
 }) {
   const [draft, setDraft] = useState<RequestInputDefinition>(definition);
   const [dialog, setDialog] = useState<DialogState>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
 
   const dirty = draft !== definition;
+
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+  }, [dirty, onDirtyChange]);
 
   function existingNames(location: ParameterLocation, excludeIndex: number | null): string[] {
     const list = location === "QUERY" ? draft.queryParameters : draft.headerParameters;
@@ -77,7 +84,7 @@ export function RequestInputTab({
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
+    <div className="flex flex-col gap-5">
       <PathParameterTable pathParameters={draft.pathParameters} />
 
       <ParameterDefinitionTable
@@ -99,15 +106,15 @@ export function RequestInputTab({
       <RequestBodyDefinitionCard enabled={draft.requestBody !== null} onToggle={handleBodyToggle} />
 
       {!readOnly && (
-        <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-          {saveError && <p style={{ color: "red", margin: 0 }}>{saveError}</p>}
-          <div style={{ display: "flex", gap: "10px" }}>
-            <button onClick={handleCancel} disabled={!dirty} style={{ padding: "10px 16px", border: "1px solid #000", backgroundColor: "#fff", cursor: dirty ? "pointer" : "not-allowed", opacity: dirty ? 1 : 0.5 }}>
+        <div className="flex flex-col gap-2.5">
+          {saveError && <p className="m-0 text-sm text-error">{saveError}</p>}
+          <div className="flex gap-2.5">
+            <Button variant="secondary" onClick={handleCancel} disabled={!dirty}>
               Cancel changes
-            </button>
-            <button onClick={() => void handleSave()} disabled={!dirty || saving} style={{ padding: "10px 16px", border: "1px solid #000", backgroundColor: "#fff", cursor: dirty && !saving ? "pointer" : "not-allowed", opacity: dirty && !saving ? 1 : 0.5 }}>
+            </Button>
+            <Button variant="primary" onClick={() => void handleSave()} disabled={!dirty || saving}>
               {saving ? "Saving..." : "Save"}
-            </button>
+            </Button>
           </div>
         </div>
       )}

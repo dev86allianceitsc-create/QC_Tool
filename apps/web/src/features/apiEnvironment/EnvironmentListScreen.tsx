@@ -9,6 +9,8 @@ import { InactiveBanner } from "./InactiveBanner";
 import { Toggle } from "./Toggle";
 import type { EnvironmentClassification, EnvironmentListItem } from "./apiEnvironment.types";
 import { useEnvironmentList } from "./useEnvironmentList";
+import { Button } from "../../components/ui/Button";
+import { thClass, tdClass, trHoverClass } from "../../components/ui/table";
 
 // UI-ENV-01: Environment List. Allow Run mutation is Admin-only (REQ-ENV-003)
 // and disabled entirely once the Environment is INACTIVE. Environment
@@ -87,71 +89,81 @@ export function EnvironmentListScreen({
   return (
     <div>
       {projectInactive && <InactiveBanner message="This Project is INACTIVE. Environments are view-only until the Project is reactivated." />}
-      <div style={{ padding: "10px 20px", borderBottom: "1px solid #ccc", display: "flex", alignItems: "center", justifyContent: "flex-end" }}>
+      <div className="flex items-center justify-end border-b border-border px-5 py-2.5">
         {isAdmin && !projectInactive && (
-          <button onClick={() => { setModalError(null); setShowModal("create"); }} style={{ padding: "8px 12px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
+          <Button
+            variant="primary"
+            onClick={() => {
+              setModalError(null);
+              setShowModal("create");
+            }}
+          >
             + Add Environment
-          </button>
+          </Button>
         )}
       </div>
-      <div style={{ flex: 1, padding: "20px", overflow: "auto" }}>
-        {loading && <p>Loading Environments...</p>}
+      <div className="flex-1 overflow-auto p-5">
+        {loading && <p className="text-sm text-muted">Loading Environments...</p>}
         {!loading && error && (
           <div>
-            <p style={{ color: "red" }}>{error}</p>
-            <button onClick={() => void refetch()} style={{ padding: "6px 12px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
+            <p className="text-sm text-error">{error}</p>
+            <Button variant="secondary" size="sm" onClick={() => void refetch()}>
               Retry
-            </button>
+            </Button>
           </div>
         )}
-        {!loading && !error && environments.length === 0 && <p style={{ color: "#666" }}>No Environments yet in this Project.</p>}
+        {!loading && !error && environments.length === 0 && <p className="text-sm text-muted">No Environments yet in this Project.</p>}
         {!loading && !error && environments.length > 0 && (
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <table className="w-full border-collapse">
             <thead>
-              <tr style={{ borderBottom: "2px solid #000" }}>
-                <th style={{ textAlign: "left", padding: "10px", borderBottom: "1px solid #ccc" }}>Name</th>
-                <th style={{ textAlign: "left", padding: "10px", borderBottom: "1px solid #ccc" }}>Classification</th>
-                <th style={{ textAlign: "left", padding: "10px", borderBottom: "1px solid #ccc" }}>Status</th>
-                <th style={{ textAlign: "left", padding: "10px", borderBottom: "1px solid #ccc" }}>Allow Run</th>
-                {isAdmin && <th style={{ padding: "10px", borderBottom: "1px solid #ccc" }}>Actions</th>}
+              <tr>
+                <th className={thClass}>Name</th>
+                <th className={thClass}>Classification</th>
+                <th className={thClass}>Status</th>
+                <th className={thClass}>Allow Run</th>
+                {isAdmin && <th className={`${thClass} text-center`}>Actions</th>}
               </tr>
             </thead>
             <tbody>
               {environments.map((env) => {
                 const envInactive = env.environmentStatus === "INACTIVE";
                 return (
-                  <tr key={env.environmentId} style={{ borderBottom: "1px solid #ccc" }}>
-                    <td style={{ padding: "10px" }}>{env.environmentName}</td>
-                    <td style={{ padding: "10px" }}>
+                  <tr key={env.environmentId} className={trHoverClass}>
+                    <td className={`${tdClass} font-medium`}>{env.environmentName}</td>
+                    <td className={tdClass}>
                       <ClassificationBadge classification={env.classification} />
                     </td>
-                    <td style={{ padding: "10px" }}>
+                    <td className={tdClass}>
                       <StatusBadge status={env.environmentStatus} />
                     </td>
-                    <td style={{ padding: "10px" }}>
-                      <Toggle
-                        checked={env.allowRun}
-                        disabled={!isAdmin || envInactive || projectInactive}
-                        onChange={(v) => void handleToggleAllowRun(env, v)}
-                        label="Allow Run"
-                      />
+                    <td className={tdClass}>
+                      <Toggle checked={env.allowRun} disabled={!isAdmin || envInactive || projectInactive} onChange={(v) => void handleToggleAllowRun(env, v)} label="Allow Run" />
                     </td>
                     {isAdmin && (
-                      <td style={{ padding: "10px", textAlign: "center" }}>
-                        <button
-                          onClick={() => { setModalError(null); setShowModal(env); }}
+                      <td className={`${tdClass} text-center`}>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          className="mr-1.5"
+                          onClick={() => {
+                            setModalError(null);
+                            setShowModal(env);
+                          }}
                           disabled={projectInactive}
-                          style={{ padding: "4px 8px", border: "1px solid #000", backgroundColor: "#fff", cursor: projectInactive ? "not-allowed" : "pointer", marginRight: "5px", opacity: projectInactive ? 0.5 : 1 }}
                         >
                           Edit
-                        </button>
-                        <button
-                          onClick={() => { setStatusError(null); setStatusTarget(env); }}
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => {
+                            setStatusError(null);
+                            setStatusTarget(env);
+                          }}
                           disabled={projectInactive}
-                          style={{ padding: "4px 8px", border: "1px solid #000", backgroundColor: "#fff", cursor: projectInactive ? "not-allowed" : "pointer", opacity: projectInactive ? 0.5 : 1 }}
                         >
                           {envInactive ? "Reactivate" : "Deactivate"}
-                        </button>
+                        </Button>
                       </td>
                     )}
                   </tr>

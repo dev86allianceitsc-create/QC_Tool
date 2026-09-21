@@ -3,29 +3,40 @@ import { ApiError } from "../../services/api-client";
 import { ConfirmDialog } from "../projects/ConfirmDialog";
 import { StatusBadge } from "../projects/StatusBadge";
 import type { Role } from "../projects/projects.types";
+import { AuthenticationTab } from "./AuthenticationTab";
 import { ClassificationBadge } from "./ClassificationBadge";
 import { CreateEditApiModal } from "./CreateEditApiModal";
-import { CredentialSection } from "./CredentialSection";
 import { InactiveBanner } from "./InactiveBanner";
 import { RequestInputTab } from "./RequestInputTab";
 import { RunRequestPanel } from "./RunRequestPanel";
 import { useApiDetail } from "./useApiDetail";
 import { useApiEnvironmentConfigs } from "./useApiEnvironmentConfigs";
+import { useAuthentication } from "./useAuthentication";
 import { useEnvironmentList } from "./useEnvironmentList";
 import { useRequestInput } from "./useRequestInput";
+import { Badge } from "../../components/ui/Badge";
+import { Button } from "../../components/ui/Button";
+import { Card } from "../../components/ui/Card";
+import { HttpMethodBadge } from "../../components/ui/HttpMethodBadge";
+import { StepSidebar, type StepReadiness, type StepSidebarItem } from "../../components/ui/StepSidebar";
 
-const TAB_LABELS: Record<"overview" | "requestInput" | "environments", string> = {
-  overview: "Overview",
-  requestInput: "Request Input",
-  environments: "Environments",
-};
+type ApiDetailTab = "endpoint" | "requestInput" | "authentication" | "reviewRun";
 
-// UI-API-06 (Overview) + UI-APIENV-01 (per-Environment Full URL + Credential
-// boundary). Allow Run itself is only mutated from EnvironmentListScreen
-// (REQ-ENV-003 scopes that mutation to the Environment, not the API) — here
-// it is read-only context alongside the Environment's Classification/Status.
-// Project-level Header/tabs live in ProjectLayout; this screen only adds an
-// "APIs / {api}" breadcrumb back to the API List.
+const STEP_ORDER: ApiDetailTab[] = ["endpoint", "requestInput", "authentication", "reviewRun"];
+
+// UI-API-06 (Endpoint) + UI-APIENV-01 (per-Environment Full URL + Credential
+// boundary), restructured into the handoff's guided-step order: Endpoint →
+// Request Input → Authentication → Review & Run. Every step stays directly
+// reachable (not a locked wizard) — this is presentation/navigation only,
+// the underlying hooks/components (useRequestInput, useApiEnvironmentConfigs,
+// useAuthentication, RunRequestPanel) are unchanged. Allow Run itself is
+// only mutated from EnvironmentListScreen (REQ-ENV-003 scopes that mutation
+// to the Environment, not the API) — here it is read-only context alongside
+// the Environment's Classification/Status. Project-level Header/tabs live in
+// ProjectLayout; this screen only adds an "APIs / {api}" breadcrumb back to
+// the API List. Step readiness badges are derived only from real fields
+// (requestInput contents, urlStatus, credentialStatus, environments.length)
+// — never invented UI-only rules.
 export function ApiDetailScreen({
   user,
   projectId,
@@ -53,7 +64,7 @@ export function ApiDetailScreen({
   const { configs, loading: configsLoading, putConfig } = useApiEnvironmentConfigs(projectId, apiId, accessToken, onSessionExpired, onAccessDenied);
   const requestInput = useRequestInput(projectId, apiId, accessToken, onSessionExpired, onAccessDenied);
 
-  const [activeTab, setActiveTab] = useState<"overview" | "requestInput" | "environments">("overview");
+  const [activeTab, setActiveTab] = useState<ApiDetailTab>("endpoint");
   const [showEditModal, setShowEditModal] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -63,7 +74,11 @@ export function ApiDetailScreen({
   const [urlDraft, setUrlDraft] = useState<Record<string, string>>({});
   const [savingUrl, setSavingUrl] = useState(false);
   const [urlError, setUrlError] = useState<string | null>(null);
-  const [runPanelOpen, setRunPanelOpen] = useState(false);
+  const [requestInputDirty, setRequestInputDirty] = useState(false);
+  const [authenticationDirty, setAuthenticationDirty] = useState(false);
+  const [pendingNav, setPendingNav] = useState<(() => void) | null>(null);
+
+  const authentication = useAuthentication(projectId, apiId, selectedEnvironmentId, accessToken, onSessionExpired, onAccessDenied);
 
   useEffect(() => {
     if (!selectedEnvironmentId && environments.length > 0) {
@@ -73,7 +88,7 @@ export function ApiDetailScreen({
 
   if (loading) {
     return (
-      <div style={{ padding: "20px" }}>
+      <div className="p-5">
         <p>Loading API...</p>
       </div>
     );
@@ -81,15 +96,15 @@ export function ApiDetailScreen({
 
   if (error || !api) {
     return (
-      <div style={{ padding: "20px" }}>
-        <p style={{ color: "red" }}>{error ?? "API not found."}</p>
-        <div style={{ display: "flex", gap: "10px" }}>
-          <button onClick={() => void refetch()} style={{ padding: "6px 12px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
+      <div className="p-5">
+        <p className="text-error">{error ?? "API not found."}</p>
+        <div className="flex gap-2.5">
+          <Button variant="secondary" onClick={() => void refetch()}>
             Retry
-          </button>
-          <button onClick={onBack} style={{ padding: "6px 12px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
+          </Button>
+          <Button variant="secondary" onClick={onBack}>
             ← APIs
-          </button>
+          </Button>
         </div>
       </div>
     );
@@ -100,6 +115,26 @@ export function ApiDetailScreen({
   const config = selectedEnvironment ? configs.find((c) => c.environmentId === selectedEnvironment.environmentId) ?? null : null;
   const environmentInactive = selectedEnvironment?.environmentStatus === "INACTIVE";
   const readOnlyConfig = projectInactive || environmentInactive;
+  const canRun = !!requestInput.definition && environments.length > 0;
+
+  // UX-01: switching step/tab (or, for Authentication, switching Environment)
+  // away from an unsaved draft would silently drop it (Full URL drafts live
+  // in this screen's own state and survive tab switches, so they need no
+  // such guard). No reusable "unsaved changes" mechanism exists elsewhere in
+  // the app yet, so this guard is scoped to this screen's own internal
+  // navigation only.
+  function guardedNavigate(action: () => void) {
+    if (requestInputDirty || authenticationDirty) {
+      setPendingNav(() => action);
+    } else {
+      action();
+    }
+  }
+
+  function confirmPendingNav() {
+    pendingNav?.();
+    setPendingNav(null);
+  }
 
   async function handleSaveEdit(input: { apiName: string; httpMethod: string; path: string; description: string | null }) {
     setSaving(true);
@@ -139,156 +174,304 @@ export function ApiDetailScreen({
     }
   }
 
+  const requestInputHasData =
+    !!requestInput.definition &&
+    (requestInput.definition.pathParameters.length > 0 ||
+      requestInput.definition.queryParameters.length > 0 ||
+      requestInput.definition.headerParameters.length > 0 ||
+      requestInput.definition.requestBody !== null);
+  // "not_configured" (not "not required") — an empty Request Input has no
+  // backing business rule saying the API needs no input; it may simply not
+  // be filled in yet, so the badge must not claim more than that fact.
+  const requestInputReadiness: StepReadiness | undefined = requestInput.definition ? (requestInputHasData ? "configured" : "not_configured") : undefined;
+
+  const reviewRunReadiness: StepReadiness =
+    environments.length === 0 ? "not_available" : config?.urlStatus === "CONFIGURED" ? "configured" : "needs_attention";
+
+  // credentialStatus already collapses NONE→NOT_REQUIRED at the backend, so
+  // "configured" covers both "no credential needed" and "credential set";
+  // "needs_attention" is only the transient state before configs load.
+  const authenticationReadiness: StepReadiness =
+    environments.length === 0
+      ? "not_available"
+      : !config
+        ? "needs_attention"
+        : config.credentialStatus === "NOT_CONFIGURED"
+          ? "not_configured"
+          : "configured";
+
+  const steps: StepSidebarItem[] = [
+    { key: "endpoint", label: "Endpoint", description: "Method, path, and description." },
+    { key: "requestInput", label: "Request Input", description: "Path, Query, Header parameters and Body.", readiness: requestInputReadiness },
+    { key: "authentication", label: "Authentication", description: "Credential configuration.", readiness: authenticationReadiness },
+    { key: "reviewRun", label: "Review & Run", description: "Execution target and manual Run values.", readiness: reviewRunReadiness },
+  ];
+
+  const currentIndex = STEP_ORDER.indexOf(activeTab);
+
   return (
     <div>
       {projectInactive && <InactiveBanner message="This Project is INACTIVE. This API is view-only until the Project is reactivated." />}
-      <div style={{ padding: "10px 20px", borderBottom: "1px solid #ccc", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div style={{ fontSize: "14px" }}>
-          <button onClick={onBack} style={{ border: "none", background: "none", padding: 0, color: "#000", textDecoration: "underline", cursor: "pointer", fontFamily: "inherit", fontSize: "inherit" }}>
-            APIs
-          </button>
-          <span style={{ margin: "0 6px", color: "#666" }}>/</span>
-          <span>{currentApi.apiName}</span>
+
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-6 py-4">
+        <div>
+          <div className="text-xs text-muted">
+            <button onClick={onBack} className="cursor-pointer border-none bg-transparent p-0 text-xs text-gray-700 underline">
+              APIs
+            </button>
+            <span className="mx-1.5">/</span>
+            <span className="text-gray-900">{currentApi.apiName}</span>
+          </div>
+          <div className="mt-1.5 flex items-center gap-2">
+            <HttpMethodBadge method={currentApi.httpMethod} />
+            <span className="font-mono text-sm text-gray-900">{currentApi.path}</span>
+          </div>
         </div>
-        {!projectInactive && (
-          <div style={{ display: "flex", gap: "10px" }}>
-            <button
-              onClick={() => setRunPanelOpen(true)}
-              disabled={!requestInput.definition || environments.length === 0}
-              style={{ padding: "6px 12px", border: "1px solid #000", backgroundColor: "#fff", cursor: !requestInput.definition || environments.length === 0 ? "not-allowed" : "pointer", opacity: !requestInput.definition || environments.length === 0 ? 0.5 : 1 }}
+
+        <div className="flex items-center gap-2.5">
+          {environments.length > 0 && (
+            <select
+              aria-label="Environment"
+              value={selectedEnvironmentId ?? ""}
+              onChange={(e) => {
+                const nextEnvironmentId = e.target.value;
+                guardedNavigate(() => setSelectedEnvironmentId(nextEnvironmentId));
+              }}
+              className="rounded-md border border-border px-2.5 py-1.5 text-sm text-gray-900"
             >
-              Run API
-            </button>
-            <button onClick={() => { setEditError(null); setShowEditModal(true); }} style={{ padding: "6px 12px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
-              Edit
-            </button>
-            {isAdmin && (
-              <button onClick={() => { setDeleteError(null); setShowDeleteConfirm(true); }} style={{ padding: "6px 12px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer", color: "red" }}>
-                Delete
-              </button>
-            )}
-          </div>
-        )}
-      </div>
-      <div style={{ display: "flex", borderBottom: "1px solid #ccc" }}>
-        {(["overview", "requestInput", "environments"] as const).map((tab) => (
-          <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            style={{
-              padding: "10px 20px",
-              border: "none",
-              borderBottom: activeTab === tab ? "2px solid #000" : "none",
-              backgroundColor: "#fff",
-              cursor: "pointer",
-              fontWeight: activeTab === tab ? "bold" : "normal",
-            }}
-          >
-            {TAB_LABELS[tab]}
-          </button>
-        ))}
-      </div>
-      <div style={{ flex: 1, padding: "20px", overflow: "auto" }}>
-        {activeTab === "overview" && (
-          <div style={{ border: "1px solid #ccc", padding: "20px" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-              <h3 style={{ margin: 0 }}>{currentApi.apiName}</h3>
-            </div>
-            <p style={{ marginTop: "10px" }}>
-              <strong>{currentApi.httpMethod}</strong> {currentApi.path}
-            </p>
-            <p style={{ color: "#666", marginTop: "10px" }}>{currentApi.description || "No description provided."}</p>
-          </div>
-        )}
-
-        {activeTab === "requestInput" && requestInput.loading && (
-          <div style={{ border: "1px solid #ccc", padding: "20px" }}>
-            <p>Loading Request Input...</p>
-          </div>
-        )}
-
-        {activeTab === "requestInput" && !requestInput.loading && requestInput.error && (
-          <div style={{ border: "1px solid #ccc", padding: "20px" }}>
-            <p style={{ color: "red" }}>{requestInput.error}</p>
-            <button onClick={() => void requestInput.refetch()} style={{ padding: "6px 12px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
-              Retry
-            </button>
-          </div>
-        )}
-
-        {activeTab === "requestInput" && !requestInput.loading && !requestInput.error && requestInput.definition && (
-          <RequestInputTab
-            key={apiId}
-            definition={requestInput.definition}
-            readOnly={projectInactive}
-            saving={requestInput.saving}
-            onSave={requestInput.save}
-          />
-        )}
-
-        {activeTab === "environments" && (
-          <div style={{ display: "flex", gap: "20px" }}>
-            <div style={{ width: "200px", borderRight: "1px solid #ccc" }}>
               {environments.map((env) => (
-                <button
-                  key={env.environmentId}
-                  onClick={() => setSelectedEnvironmentId(env.environmentId)}
-                  style={{
-                    display: "block",
-                    width: "100%",
-                    padding: "10px",
-                    border: "none",
-                    borderBottom: "1px solid #ccc",
-                    backgroundColor: env.environmentId === selectedEnvironmentId ? "#f3f3f3" : "#fff",
-                    cursor: "pointer",
-                    textAlign: "left",
-                    fontWeight: env.environmentId === selectedEnvironmentId ? "bold" : "normal",
+                <option key={env.environmentId} value={env.environmentId}>
+                  {env.environmentName}
+                </option>
+              ))}
+            </select>
+          )}
+          {!projectInactive && (
+            <>
+              <Button
+                variant="primary"
+                onClick={() => guardedNavigate(() => setActiveTab("reviewRun"))}
+                disabled={!canRun}
+                title="Run execution is not part of this release — this opens Review & Run to prepare values manually."
+              >
+                Run API
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  setEditError(null);
+                  setShowEditModal(true);
+                }}
+              >
+                Edit
+              </Button>
+              {isAdmin && (
+                <Button
+                  variant="danger"
+                  onClick={() => {
+                    setDeleteError(null);
+                    setShowDeleteConfirm(true);
                   }}
                 >
-                  {env.environmentName}
-                </button>
-              ))}
-            </div>
-            <div style={{ flex: 1 }}>
-              {selectedEnvironment && !configsLoading && (
-                <>
-                  <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                    <h4 style={{ margin: 0 }}>{selectedEnvironment.environmentName}</h4>
-                    <ClassificationBadge classification={selectedEnvironment.classification} />
-                    <StatusBadge status={selectedEnvironment.environmentStatus} />
-                  </div>
-                  <p style={{ color: "#666", fontSize: "13px", marginTop: "5px" }}>
-                    Allow Run: {selectedEnvironment.allowRun ? "ON" : "OFF"} (managed from the Environments list)
-                  </p>
-                  {environmentInactive && (
-                    <p style={{ color: "#6B7280", fontSize: "13px" }}>This Environment is INACTIVE — URL and Credential are view-only.</p>
-                  )}
-
-                  <div style={{ border: "1px solid #ccc", padding: "15px", marginTop: "15px" }}>
-                    <span style={{ display: "block", marginBottom: "5px", fontWeight: "bold" }}>Full URL</span>
-                    <input
-                      type="text"
-                      value={urlDraft[selectedEnvironment.environmentId] ?? config?.fullUrl ?? ""}
-                      onChange={(e) => setUrlDraft((prev) => ({ ...prev, [selectedEnvironment.environmentId]: e.target.value }))}
-                      disabled={readOnlyConfig}
-                      placeholder="https://example.com/api/..."
-                      style={{ width: "100%", padding: "8px", border: "1px solid #ccc", boxSizing: "border-box" }}
-                    />
-                    {!config?.fullUrl && <p style={{ color: "#D97706", fontSize: "12px", marginTop: "5px" }}>No URL configured — Run is blocked for this API in this Environment.</p>}
-                    {urlError && <p style={{ color: "red", fontSize: "12px", marginTop: "5px" }}>{urlError}</p>}
-                    {!readOnlyConfig && (
-                      <button onClick={() => void handleSaveUrl()} disabled={savingUrl} style={{ marginTop: "10px", padding: "6px 12px", border: "1px solid #000", backgroundColor: "#fff", cursor: savingUrl ? "not-allowed" : "pointer", opacity: savingUrl ? 0.6 : 1 }}>
-                        {savingUrl ? "Saving..." : "Save URL"}
-                      </button>
-                    )}
-                  </div>
-
-                  <CredentialSection />
-                </>
+                  Delete
+                </Button>
               )}
+            </>
+          )}
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-6 p-6 md:flex-row">
+        <StepSidebar
+          ariaLabel="API Workspace steps"
+          steps={steps}
+          activeKey={activeTab}
+          onSelect={(key) => guardedNavigate(() => setActiveTab(key as ApiDetailTab))}
+        />
+
+        <div className="min-w-0 flex-1">
+          {activeTab === "endpoint" && (
+            <Card>
+              <h3 className="m-0 text-base font-semibold text-gray-900">{currentApi.apiName}</h3>
+              <p className="mt-2.5 font-mono text-sm text-gray-900">
+                <span className="font-semibold">{currentApi.httpMethod}</span> {currentApi.path}
+              </p>
+              <p className="mt-2.5 text-sm text-muted">{currentApi.description || "No description provided."}</p>
+            </Card>
+          )}
+
+          {activeTab === "requestInput" && requestInput.loading && (
+            <Card>
+              <p className="m-0">Loading Request Input...</p>
+            </Card>
+          )}
+
+          {activeTab === "requestInput" && !requestInput.loading && requestInput.error && (
+            <Card>
+              <p className="text-error">{requestInput.error}</p>
+              <Button variant="secondary" onClick={() => void requestInput.refetch()}>
+                Retry
+              </Button>
+            </Card>
+          )}
+
+          {activeTab === "requestInput" && !requestInput.loading && !requestInput.error && requestInput.definition && (
+            <RequestInputTab
+              key={apiId}
+              definition={requestInput.definition}
+              readOnly={projectInactive}
+              saving={requestInput.saving}
+              onSave={requestInput.save}
+              onDirtyChange={setRequestInputDirty}
+            />
+          )}
+
+          {activeTab === "authentication" && environments.length === 0 && (
+            <Card>
+              <p className="m-0 text-sm text-muted">No Environments exist for this API yet. Add an Environment to configure Authentication.</p>
+            </Card>
+          )}
+
+          {activeTab === "authentication" && environments.length > 0 && authentication.loading && (
+            <Card>
+              <p className="m-0">Loading Authentication...</p>
+            </Card>
+          )}
+
+          {activeTab === "authentication" && environments.length > 0 && !authentication.loading && authentication.error && (
+            <Card>
+              <p className="text-error">{authentication.error}</p>
+              <Button variant="secondary" onClick={() => void authentication.refetch()}>
+                Retry
+              </Button>
+            </Card>
+          )}
+
+          {activeTab === "authentication" && environments.length > 0 && !authentication.loading && !authentication.error && authentication.config && (
+            <AuthenticationTab
+              key={`${apiId}:${selectedEnvironmentId}`}
+              config={authentication.config}
+              readOnly={!isAdmin || readOnlyConfig}
+              saving={authentication.saving}
+              onSaveConfiguration={authentication.saveConfiguration}
+              onSaveCredential={authentication.saveCredential}
+              onRemoveCredential={authentication.removeCredential}
+              onDirtyChange={setAuthenticationDirty}
+            />
+          )}
+
+          {activeTab === "reviewRun" && (
+            <div className="flex flex-col gap-5 lg:flex-row">
+              <div className="w-full shrink-0 lg:w-48">
+                <h4 className="m-0 mb-1 text-xs font-semibold uppercase tracking-wide text-muted">Execution Target</h4>
+                <p className="mb-2 text-xs text-muted">
+                  {environments.length} Environment{environments.length === 1 ? "" : "s"} in this Project
+                </p>
+                <ol className="flex flex-col gap-1">
+                  {environments.map((env) => (
+                    <li key={env.environmentId}>
+                      <button
+                        onClick={() => guardedNavigate(() => setSelectedEnvironmentId(env.environmentId))}
+                        className={`w-full rounded-md px-3 py-2 text-left text-sm transition-colors ${
+                          env.environmentId === selectedEnvironmentId ? "bg-primary-light font-semibold text-gray-900" : "text-gray-700 hover:bg-gray-50"
+                        }`}
+                      >
+                        <span className="block">{env.environmentName}</span>
+                        <span className="mt-0.5 flex items-center gap-1 text-xs font-normal text-muted">
+                          <span className={`h-1.5 w-1.5 rounded-full ${env.environmentStatus === "ACTIVE" ? "bg-success" : "bg-gray-300"}`} />
+                          {env.environmentStatus === "ACTIVE" ? "Active" : "Inactive"}
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+
+              <div className="min-w-0 flex-1">
+                {selectedEnvironment && !configsLoading && (
+                  <>
+                    <div className="flex flex-wrap items-center gap-2.5">
+                      <h4 className="m-0 text-sm font-semibold text-gray-900">{selectedEnvironment.environmentName}</h4>
+                      <ClassificationBadge classification={selectedEnvironment.classification} />
+                      <StatusBadge status={selectedEnvironment.environmentStatus} />
+                    </div>
+                    <p className="mt-1.5 text-xs text-muted">Allow Run: {selectedEnvironment.allowRun ? "ON" : "OFF"} (managed from the Environments list)</p>
+                    {environmentInactive && <p className="text-xs text-muted">This Environment is INACTIVE — URL and Credential are view-only.</p>}
+
+                    <Card className="mt-4">
+                      <span className="mb-1.5 block text-xs font-semibold text-gray-900">Full URL</span>
+                      <input
+                        type="text"
+                        value={urlDraft[selectedEnvironment.environmentId] ?? config?.fullUrl ?? ""}
+                        onChange={(e) => setUrlDraft((prev) => ({ ...prev, [selectedEnvironment.environmentId]: e.target.value }))}
+                        disabled={readOnlyConfig}
+                        placeholder="https://example.com/api/..."
+                        className="w-full rounded-md border border-border px-3 py-2 text-sm font-mono text-gray-900 disabled:bg-gray-50 disabled:text-muted"
+                      />
+                      {!config?.fullUrl && <p className="mt-1.5 text-xs text-warning">No URL configured — Run is blocked for this API in this Environment.</p>}
+                      {urlError && <p className="mt-1.5 text-xs text-error">{urlError}</p>}
+                      {!readOnlyConfig && (
+                        <Button variant="secondary" size="sm" className="mt-2.5" onClick={() => void handleSaveUrl()} disabled={savingUrl}>
+                          {savingUrl ? "Saving..." : "Save URL"}
+                        </Button>
+                      )}
+                    </Card>
+
+                    <Card className="mt-4">
+                      <h4 className="m-0 mb-2.5 text-sm font-semibold text-gray-900">Configuration Readiness — {selectedEnvironment.environmentName}</h4>
+                      <div className="flex flex-col gap-2 text-sm">
+                        <div className="flex items-center justify-between">
+                          <span className="text-gray-700">Environment Status</span>
+                          <Badge tone={selectedEnvironment.environmentStatus === "ACTIVE" ? "success" : "neutral"} label={selectedEnvironment.environmentStatus === "ACTIVE" ? "Active" : "Inactive"} />
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-gray-700">Allow Run</span>
+                          <Badge tone={selectedEnvironment.allowRun ? "success" : "neutral"} label={selectedEnvironment.allowRun ? "ON" : "OFF"} />
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-gray-700">URL</span>
+                          <Badge tone={config?.urlStatus === "CONFIGURED" ? "success" : "warning"} label={config?.urlStatus === "CONFIGURED" ? "Configured" : "Not Configured"} />
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-gray-700">Credential</span>
+                          <Badge
+                            tone={config?.credentialStatus === "CONFIGURED" ? "success" : config?.credentialStatus === "NOT_CONFIGURED" ? "warning" : "neutral"}
+                            label={config?.credentialStatus === "CONFIGURED" ? "Configured" : config?.credentialStatus === "NOT_CONFIGURED" ? "Not Configured" : "Not Required"}
+                          />
+                        </div>
+                      </div>
+                    </Card>
+
+                    {requestInput.definition && (
+                      <div className="mt-4">
+                        <RunRequestPanel
+                          variant="inline"
+                          definition={requestInput.definition}
+                          environments={environments}
+                          selectedEnvironmentId={selectedEnvironmentId}
+                          onSelectEnvironment={setSelectedEnvironmentId}
+                        />
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
             </div>
+          )}
+
+          <div className="mt-6 flex justify-between border-t border-border pt-4">
+            <Button variant="secondary" onClick={() => guardedNavigate(() => setActiveTab(STEP_ORDER[currentIndex - 1]))} disabled={currentIndex <= 0}>
+              ← Back
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => guardedNavigate(() => setActiveTab(STEP_ORDER[currentIndex + 1]))}
+              disabled={currentIndex >= STEP_ORDER.length - 1}
+            >
+              Next →
+            </Button>
           </div>
-        )}
+        </div>
       </div>
 
       {showEditModal && (
@@ -315,13 +498,14 @@ export function ApiDetailScreen({
         />
       )}
 
-      {runPanelOpen && requestInput.definition && (
-        <RunRequestPanel
-          definition={requestInput.definition}
-          environments={environments}
-          selectedEnvironmentId={selectedEnvironmentId}
-          onSelectEnvironment={setSelectedEnvironmentId}
-          onClose={() => setRunPanelOpen(false)}
+      {pendingNav && (
+        <ConfirmDialog
+          title="Unsaved changes"
+          message="You have unsaved changes on this step. Leave and discard them?"
+          confirmLabel="Leave"
+          danger
+          onConfirm={confirmPendingNav}
+          onCancel={() => setPendingNav(null)}
         />
       )}
     </div>

@@ -12,7 +12,7 @@ export interface ApiEnvironmentConfigListItem {
   allowRun: boolean;
   urlStatus: "CONFIGURED" | "NOT_CONFIGURED";
   fullUrl: string | null;
-  credentialStatus: "UNAVAILABLE_IN_3A";
+  credentialStatus: "NOT_REQUIRED" | "CONFIGURED" | "NOT_CONFIGURED";
 }
 
 export interface ApiEnvironmentConfigResult {
@@ -55,25 +55,30 @@ export class ApiEnvironmentConfigsService {
 
   // API-APIENV-001 — reads all Project Environments including INACTIVE for
   // traceability; a missing api_environment_configs row is represented as
-  // NOT_CONFIGURED (left-join semantics), never as an error. No credential
-  // source exists yet (Group 3C), so credentialStatus is always
-  // UNAVAILABLE_IN_3A and no plaintext/credential metadata is fabricated.
+  // NOT_CONFIGURED (left-join semantics), never as an error. credentialStatus
+  // (Group 3C) mirrors the same left-join convention against
+  // authentication_configurations: no row = auth_type NONE = NOT_REQUIRED.
   async list(projectId: string, apiId: string): Promise<{ apiId: string; items: ApiEnvironmentConfigListItem[] }> {
     const api = await this.prisma.apiConfiguration.findFirst({ where: { apiId, projectId, deletedAt: null } });
     if (!api) {
       throw new BusinessException(HttpStatus.NOT_FOUND, "NOT_FOUND", "API does not exist");
     }
 
-    const [environments, configs] = await Promise.all([
+    const [environments, configs, authConfigs] = await Promise.all([
       this.prisma.environment.findMany({ where: { projectId }, orderBy: { createdAt: "asc" } }),
       this.prisma.apiEnvironmentConfig.findMany({ where: { apiId } }),
+      this.prisma.authenticationConfiguration.findMany({ where: { apiId } }),
     ]);
     const configByEnvironmentId = new Map(configs.map((c) => [c.environmentId, c]));
+    const authConfigByEnvironmentId = new Map(authConfigs.map((c) => [c.environmentId, c]));
 
     return {
       apiId,
       items: environments.map((env) => {
         const config = configByEnvironmentId.get(env.environmentId);
+        const authConfig = authConfigByEnvironmentId.get(env.environmentId);
+        const authType = authConfig?.authType ?? "NONE";
+        const secretPresent = authConfig ? authConfig.passwordCiphertext !== null || authConfig.bearerTokenCiphertext !== null : false;
         return {
           environmentId: env.environmentId,
           environmentName: env.environmentName,
@@ -82,7 +87,7 @@ export class ApiEnvironmentConfigsService {
           allowRun: env.allowRun,
           urlStatus: config ? "CONFIGURED" : "NOT_CONFIGURED",
           fullUrl: config?.fullUrl ?? null,
-          credentialStatus: "UNAVAILABLE_IN_3A",
+          credentialStatus: authType === "NONE" ? "NOT_REQUIRED" : secretPresent ? "CONFIGURED" : "NOT_CONFIGURED",
         };
       }),
     };

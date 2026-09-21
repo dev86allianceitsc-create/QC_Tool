@@ -3,6 +3,8 @@ import { BrowserRouter, Navigate, Route, Routes, useNavigate, useOutletContext, 
 import { useAuth } from "./features/auth/useAuth";
 import { ERROR_MESSAGES, type LoginErrorType } from "./features/auth/auth.types";
 import { Header } from "./components/Header";
+import { AppShell } from "./components/AppShell";
+import { DashboardScreen } from "./features/dashboard/DashboardScreen";
 import { ProjectListScreen } from "./features/projects/ProjectListScreen";
 import { ProjectDetailScreen } from "./features/projects/ProjectDetailScreen";
 import { MembersScreen } from "./features/projects/MembersScreen";
@@ -127,7 +129,7 @@ function ProjectOverviewRoute() {
       user={ctx.user}
       projectId={ctx.projectId}
       accessToken={ctx.accessToken}
-      onBack={() => navigate("/")}
+      onBack={() => navigate("/projects")}
       onSessionExpired={ctx.onSessionExpired}
       onAccessDenied={ctx.onAccessDenied}
     />
@@ -251,62 +253,77 @@ function AuthenticatedRoutes({
 
   return (
     <Routes>
-      <Route
-        path="/"
-        element={
-          <ProjectListScreen
-            user={activeUser}
-            accessToken={accessToken}
-            onSelectProject={(id) => navigate(`/projects/${id}`)}
-            onLogout={onLogout}
-            onShowSessionExpired={onShowSessionExpired}
-            onNavigateAuditLogs={() => navigate("/audit-log")}
-            onSessionExpired={onSessionExpired}
-            onAccessDenied={onAccessDenied}
-          />
-        }
-      />
-
-      <Route
-        path="/audit-log"
-        element={
-          isAdmin ? (
-            <AuditLogScreen
+      <Route element={<AppShell isAdmin={isAdmin} />}>
+        <Route
+          index
+          element={
+            <DashboardScreen
               user={activeUser}
               accessToken={accessToken}
-              onBack={() => navigate("/")}
               onLogout={onLogout}
               onShowSessionExpired={onShowSessionExpired}
               onSessionExpired={onSessionExpired}
               onAccessDenied={onAccessDenied}
             />
-          ) : (
-            <AccessDeniedScreen onBack={() => navigate("/")} />
-          )
-        }
-      />
+          }
+        />
+
+        <Route
+          path="projects"
+          element={
+            <ProjectListScreen
+              user={activeUser}
+              accessToken={accessToken}
+              onSelectProject={(id) => navigate(`/projects/${id}`)}
+              onLogout={onLogout}
+              onShowSessionExpired={onShowSessionExpired}
+              onSessionExpired={onSessionExpired}
+              onAccessDenied={onAccessDenied}
+            />
+          }
+        />
+
+        <Route
+          path="audit-log"
+          element={
+            isAdmin ? (
+              <AuditLogScreen
+                user={activeUser}
+                accessToken={accessToken}
+                onBack={() => navigate("/")}
+                onLogout={onLogout}
+                onShowSessionExpired={onShowSessionExpired}
+                onSessionExpired={onSessionExpired}
+                onAccessDenied={onAccessDenied}
+              />
+            ) : (
+              <AccessDeniedScreen onBack={() => navigate("/")} />
+            )
+          }
+        />
+
+        <Route
+          path="projects/:projectId"
+          element={
+            <ProjectLayout
+              user={activeUser}
+              accessToken={accessToken}
+              onLogout={onLogout}
+              onShowSessionExpired={onShowSessionExpired}
+              onSessionExpired={onSessionExpired}
+              onAccessDenied={onAccessDenied}
+            />
+          }
+        >
+          <Route index element={<ProjectOverviewRoute />} />
+          <Route path="apis" element={<ApiListRoute />} />
+          <Route path="apis/:apiId" element={<ApiDetailRoute />} />
+          <Route path="environments" element={<EnvironmentListRoute />} />
+          <Route path="members" element={<MembersRoute />} />
+        </Route>
+      </Route>
 
       <Route path="/access-denied" element={<AccessDeniedScreen onBack={() => navigate("/")} />} />
-
-      <Route
-        path="/projects/:projectId"
-        element={
-          <ProjectLayout
-            user={activeUser}
-            accessToken={accessToken}
-            onLogout={onLogout}
-            onShowSessionExpired={onShowSessionExpired}
-            onSessionExpired={onSessionExpired}
-            onAccessDenied={onAccessDenied}
-          />
-        }
-      >
-        <Route index element={<ProjectOverviewRoute />} />
-        <Route path="apis" element={<ApiListRoute />} />
-        <Route path="apis/:apiId" element={<ApiDetailRoute />} />
-        <Route path="environments" element={<EnvironmentListRoute />} />
-        <Route path="members" element={<MembersRoute />} />
-      </Route>
 
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

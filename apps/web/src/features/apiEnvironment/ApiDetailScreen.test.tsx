@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mockJsonResponse } from "../../test/mock-fetch";
 import { ApiDetailScreen } from "./ApiDetailScreen";
@@ -25,6 +25,19 @@ const ENVIRONMENTS_PAGE = {
 
 const CONFIGS_PAGE = { apiId: "a1", items: [] };
 
+const AUTH_CONFIG = {
+  apiId: "a1",
+  environmentId: "e1",
+  authType: "NONE",
+  credentialStatus: "NOT_REQUIRED",
+  loginUrl: null,
+  username: null,
+  usernameField: null,
+  passwordField: null,
+  tokenResponsePath: null,
+  updatedAt: null,
+};
+
 const REQUEST_INPUT = {
   apiId: "a1",
   httpMethod: "GET",
@@ -49,6 +62,13 @@ function stubFetch(requestInputOverride?: unknown, requestInputStatus = 200) {
         return Promise.resolve(mockJsonResponse(200, { ...REQUEST_INPUT, ...payload }));
       }
       return Promise.resolve(mockJsonResponse(requestInputStatus, requestInputOverride ?? REQUEST_INPUT));
+    }
+    if (url.includes("/authentication")) {
+      if (init?.method === "PUT" || init?.method === "DELETE") {
+        const payload = init.body ? JSON.parse(init.body as string) : {};
+        return Promise.resolve(mockJsonResponse(200, { ...AUTH_CONFIG, ...payload }));
+      }
+      return Promise.resolve(mockJsonResponse(200, AUTH_CONFIG));
     }
     if (url.includes("/environment-configs")) {
       return Promise.resolve(mockJsonResponse(200, CONFIGS_PAGE));
@@ -81,13 +101,14 @@ function renderScreen() {
 }
 
 describe("ApiDetailScreen — tabs", () => {
-  it("shows Request Input between Overview and Environments", async () => {
+  it("shows the guided steps in order: Endpoint, Request Input, Authentication, Review & Run", async () => {
     stubFetch();
     renderScreen();
     await screen.findByText("Fetch a widget by id.");
 
-    const tabButtons = screen.getAllByRole("button").filter((b) => ["Overview", "Request Input", "Environments"].includes(b.textContent ?? ""));
-    expect(tabButtons.map((b) => b.textContent)).toEqual(["Overview", "Request Input", "Environments"]);
+    const nav = screen.getByRole("navigation", { name: "API Workspace steps" });
+    const stepButtons = within(nav).getAllByRole("button");
+    expect(stepButtons.map((b) => b.getAttribute("aria-label"))).toEqual(["Endpoint", "Request Input", "Authentication", "Review & Run"]);
   });
 
   it("renders the Request Input tab content when selected, loaded from GET", async () => {
@@ -104,7 +125,7 @@ describe("ApiDetailScreen — tabs", () => {
     expect(screen.getByText("Request Body")).toBeInTheDocument();
   });
 
-  it("still renders the existing Overview tab content (non-regression)", async () => {
+  it("still renders the existing Endpoint tab content (non-regression)", async () => {
     stubFetch();
     renderScreen();
     await screen.findByText("Fetch a widget by id.");
@@ -112,14 +133,25 @@ describe("ApiDetailScreen — tabs", () => {
     expect(screen.getByText("Fetch a widget by id.")).toBeInTheDocument();
   });
 
-  it("still renders the existing Environments tab content (non-regression)", async () => {
+  it("still renders the existing Review & Run tab content (non-regression)", async () => {
     stubFetch();
     renderScreen();
     await screen.findByText("Fetch a widget by id.");
 
-    fireEvent.click(screen.getByText("Environments"));
+    fireEvent.click(screen.getByText("Review & Run"));
 
     expect(await screen.findByText("Full URL")).toBeInTheDocument();
+  });
+
+  it("renders the Authentication tab with real configuration, driven by the API", async () => {
+    stubFetch();
+    renderScreen();
+    await screen.findByText("Fetch a widget by id.");
+
+    fireEvent.click(screen.getByText("Authentication"));
+
+    expect(await screen.findByText("Authentication Type")).toBeInTheDocument();
+    expect(screen.getByText("No authentication is required for this API in this Environment.")).toBeInTheDocument();
   });
 });
 
@@ -178,7 +210,7 @@ describe("ApiDetailScreen — Request Input persistence", () => {
 });
 
 describe("ApiDetailScreen — Run API", () => {
-  it("opens the Run Preparation panel from the Run API button, reflecting the persisted Definition", async () => {
+  it("navigates to Review & Run and shows the Run Preparation fields inline, reflecting the persisted Definition", async () => {
     stubFetch({
       ...REQUEST_INPUT,
       queryParameters: [{ name: "status", required: false }],
@@ -189,11 +221,13 @@ describe("ApiDetailScreen — Run API", () => {
     await screen.findByText((_, el) => el?.tagName === "BUTTON" && el.textContent === "Run API" && !(el as HTMLButtonElement).disabled);
     fireEvent.click(screen.getByText("Run API"));
 
-    expect(screen.getByRole("dialog", { name: "Run Preparation" })).toBeInTheDocument();
-    expect(screen.getByText("status")).toBeInTheDocument();
+    expect(await screen.findByText("Full URL")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Run Preparation" })).not.toBeInTheDocument();
+    expect(screen.getByText("Run Preparation")).toBeInTheDocument();
+    expect(screen.getByLabelText(/^status/)).toBeInTheDocument();
   });
 
-  it("does not execute any request when Run Preparation is opened and closed", async () => {
+  it("does not execute any request when Review & Run is shown", async () => {
     const fetchMock = stubFetch();
     renderScreen();
     await screen.findByText("Fetch a widget by id.");
@@ -201,7 +235,7 @@ describe("ApiDetailScreen — Run API", () => {
     fetchMock.mockClear();
 
     fireEvent.click(screen.getByText("Run API"));
-    fireEvent.click(screen.getByText("Close"));
+    await screen.findByText("Full URL");
 
     expect(fetchMock).not.toHaveBeenCalled();
   });

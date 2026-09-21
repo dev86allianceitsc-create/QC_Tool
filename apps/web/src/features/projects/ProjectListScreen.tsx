@@ -4,6 +4,10 @@ import { ApiError } from "../../services/api-client";
 import { useProjectsList } from "./useProjectsList";
 import type { Role } from "./projects.types";
 import { StatusBadge } from "./StatusBadge";
+import { Button } from "../../components/ui/Button";
+import { Input, Textarea } from "../../components/ui/Input";
+import { Modal } from "../../components/ui/Modal";
+import { thClass, tdClass, trHoverClass } from "../../components/ui/table";
 
 type CreateModalState = "default" | "loading" | "success" | "invalid" | "error";
 
@@ -17,7 +21,6 @@ export function ProjectListScreen({
   onSelectProject,
   onLogout,
   onShowSessionExpired,
-  onNavigateAuditLogs,
   onSessionExpired,
   onAccessDenied,
 }: {
@@ -26,7 +29,6 @@ export function ProjectListScreen({
   onSelectProject: (id: string) => void;
   onLogout: () => void;
   onShowSessionExpired?: () => void;
-  onNavigateAuditLogs?: () => void;
   onSessionExpired: () => void;
   onAccessDenied: () => void;
 }) {
@@ -63,47 +65,44 @@ export function ProjectListScreen({
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100vh", backgroundColor: "#fff" }}>
-      <Header
-        user={user}
-        onLogout={onLogout}
-        title="Projects"
-        onShowSessionExpired={onShowSessionExpired}
-        onNavigateAuditLogs={isAdmin ? onNavigateAuditLogs : undefined}
-      />
-      <div style={{ flex: 1, padding: "20px", overflow: "auto" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <h2>Projects</h2>
+    <div className="flex h-full flex-col bg-white">
+      <Header user={user} onLogout={onLogout} title="Projects" onShowSessionExpired={onShowSessionExpired} />
+      <div className="flex-1 overflow-auto p-6">
+        <div className="mb-5 flex items-start justify-between">
+          <div>
+            <h1 className="m-0 text-xl font-semibold text-gray-900">Projects</h1>
+            <p className="mt-1 text-sm text-muted">Select a project to open its APIs, environments, and members.</p>
+          </div>
           {isAdmin && (
-            <button onClick={openCreateModal} style={{ padding: "8px 12px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
+            <Button variant="primary" onClick={openCreateModal}>
               + Create Project
-            </button>
+            </Button>
           )}
         </div>
-        {loading && <p>Loading projects...</p>}
-        {error && <p style={{ color: "red" }}>{error}</p>}
+        {loading && <p className="text-sm text-muted">Loading projects...</p>}
+        {error && <p className="text-sm text-error">{error}</p>}
         {!loading && !error && (
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <table className="w-full border-collapse">
             <thead>
-              <tr style={{ borderBottom: "2px solid #000" }}>
-                <th style={{ textAlign: "left", padding: "10px", borderBottom: "1px solid #ccc" }}>Name</th>
-                <th style={{ textAlign: "left", padding: "10px", borderBottom: "1px solid #ccc" }}>Description</th>
-                <th style={{ textAlign: "left", padding: "10px", borderBottom: "1px solid #ccc" }}>Status</th>
-                <th style={{ padding: "10px", borderBottom: "1px solid #ccc", textAlign: "center" }}>Action</th>
+              <tr>
+                <th className={thClass}>Name</th>
+                <th className={thClass}>Description</th>
+                <th className={thClass}>Status</th>
+                <th className={`${thClass} text-center`}>Action</th>
               </tr>
             </thead>
             <tbody>
               {projects.map((p) => (
-                <tr key={p.projectId} style={{ borderBottom: "1px solid #ccc" }}>
-                  <td style={{ padding: "10px" }}>{p.projectName}</td>
-                  <td style={{ padding: "10px", color: "#666" }}>{p.description || "—"}</td>
-                  <td style={{ padding: "10px" }}>
+                <tr key={p.projectId} className={trHoverClass}>
+                  <td className={`${tdClass} font-medium`}>{p.projectName}</td>
+                  <td className={`${tdClass} text-muted`}>{p.description || "—"}</td>
+                  <td className={tdClass}>
                     <StatusBadge status={p.projectStatus} />
                   </td>
-                  <td style={{ padding: "10px", textAlign: "center" }}>
-                    <button onClick={() => onSelectProject(p.projectId)} style={{ padding: "6px 12px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
+                  <td className={`${tdClass} text-center`}>
+                    <Button variant="secondary" size="sm" onClick={() => onSelectProject(p.projectId)}>
                       Open
-                    </button>
+                    </Button>
                   </td>
                 </tr>
               ))}
@@ -113,54 +112,44 @@ export function ProjectListScreen({
       </div>
 
       {showCreateModal && (
-        <div style={{ position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", backgroundColor: "rgba(0,0,0,0.5)" }}>
-          <div style={{ backgroundColor: "#fff", border: "1px solid #000", padding: "20px", width: "400px" }}>
-            <h3>Create Project</h3>
-            {createState === "success" ? (
-              <div style={{ textAlign: "center", padding: "20px 0" }}>
-                <p>Project created successfully</p>
-                <button onClick={() => setShowCreateModal(false)} style={{ padding: "10px 20px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
-                  Done
-                </button>
+        <Modal title="Create Project">
+          {createState === "success" ? (
+            <div className="py-5 text-center">
+              <p className="text-sm text-gray-900">Project created successfully</p>
+              <Button variant="primary" className="mt-3" onClick={() => setShowCreateModal(false)}>
+                Done
+              </Button>
+            </div>
+          ) : (
+            <>
+              <div className="mb-3">
+                <Input
+                  label="Project Name *"
+                  type="text"
+                  value={name}
+                  onChange={(e) => {
+                    setName(e.target.value);
+                    setCreateState("default");
+                  }}
+                />
               </div>
-            ) : (
-              <>
-                <label style={{ display: "block", marginBottom: "10px" }}>
-                  <span style={{ display: "block", marginBottom: "5px", fontWeight: "bold" }}>Project Name *</span>
-                  <input
-                    type="text"
-                    value={name}
-                    onChange={(e) => { setName(e.target.value); setCreateState("default"); }}
-                    style={{ width: "100%", padding: "8px", border: "1px solid #ccc", boxSizing: "border-box" }}
-                  />
-                </label>
-                <label style={{ display: "block", marginBottom: "10px" }}>
-                  <span style={{ display: "block", marginBottom: "5px", fontWeight: "bold" }}>Description</span>
-                  <textarea
-                    value={description}
-                    onChange={(e) => setDescription(e.target.value)}
-                    style={{ width: "100%", padding: "8px", border: "1px solid #ccc", boxSizing: "border-box", minHeight: "60px" }}
-                  />
-                </label>
-                {createState === "invalid" && <p style={{ color: "red", fontSize: "12px" }}>Project Name is required</p>}
-                {createState === "error" && <p style={{ color: "red", fontSize: "12px" }}>{createErrorMessage}</p>}
-                {createState === "loading" && <p style={{ fontSize: "12px" }}>Creating project...</p>}
-                <div style={{ display: "flex", gap: "10px", marginTop: "15px" }}>
-                  <button onClick={() => setShowCreateModal(false)} style={{ flex: 1, padding: "10px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
-                    Cancel
-                  </button>
-                  <button
-                    onClick={handleCreate}
-                    disabled={createState === "loading"}
-                    style={{ flex: 1, padding: "10px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer", opacity: createState === "loading" ? 0.6 : 1 }}
-                  >
-                    Create
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
+              <div className="mb-3">
+                <Textarea label="Description" value={description} onChange={(e) => setDescription(e.target.value)} />
+              </div>
+              {createState === "invalid" && <p className="text-xs text-error">Project Name is required</p>}
+              {createState === "error" && <p className="text-xs text-error">{createErrorMessage}</p>}
+              {createState === "loading" && <p className="text-xs text-muted">Creating project...</p>}
+              <div className="mt-4 flex gap-2.5">
+                <Button variant="secondary" className="flex-1" onClick={() => setShowCreateModal(false)}>
+                  Cancel
+                </Button>
+                <Button variant="primary" className="flex-1" onClick={handleCreate} disabled={createState === "loading"}>
+                  Create
+                </Button>
+              </div>
+            </>
+          )}
+        </Modal>
       )}
     </div>
   );

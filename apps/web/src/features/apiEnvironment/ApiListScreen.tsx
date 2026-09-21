@@ -8,6 +8,9 @@ import { ImportSwaggerFlow } from "./ImportSwaggerFlow";
 import { InactiveBanner } from "./InactiveBanner";
 import type { ApiListItem } from "./apiEnvironment.types";
 import { useApiList } from "./useApiList";
+import { Button } from "../../components/ui/Button";
+import { HttpMethodBadge } from "../../components/ui/HttpMethodBadge";
+import { thClass, tdClass, trHoverClass } from "../../components/ui/table";
 
 // UI-API-01: API List for a Project. Per REQ-SEC-003, both ADMIN and USER
 // (with Project Access, already guaranteed by the time this screen renders)
@@ -74,23 +77,23 @@ export function ApiListScreen({
   return (
     <div>
       {projectInactive && <InactiveBanner message="This Project is INACTIVE. APIs are view-only until the Project is reactivated." />}
-      <div style={{ padding: "10px 20px", borderBottom: "1px solid #ccc", display: "flex", alignItems: "center", justifyContent: "flex-end", position: "relative" }}>
+      <div className="flex items-center justify-end border-b border-border px-5 py-2.5">
         {!projectInactive && (
-          <div style={{ position: "relative" }}>
-            <button onClick={() => setShowAddMenu((v) => !v)} style={{ padding: "8px 12px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
+          <div className="relative">
+            <Button variant="primary" onClick={() => setShowAddMenu((v) => !v)}>
               + Add API
-            </button>
+            </Button>
             {showAddMenu && (
-              <div style={{ position: "absolute", right: 0, top: "36px", border: "1px solid #000", backgroundColor: "#fff", zIndex: 10, minWidth: "200px" }}>
+              <div className="absolute right-0 top-full z-10 mt-1 min-w-[200px] rounded-md border border-border bg-white shadow-lg">
                 <button
                   onClick={() => { setShowAddMenu(false); setModalError(null); setShowModal("create"); }}
-                  style={{ display: "block", width: "100%", padding: "10px 12px", border: "none", backgroundColor: "#fff", cursor: "pointer", textAlign: "left" }}
+                  className="block w-full px-3 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50"
                 >
                   Create manually
                 </button>
                 <button
                   onClick={() => { setShowAddMenu(false); setShowImport(true); }}
-                  style={{ display: "block", width: "100%", padding: "10px 12px", border: "none", borderTop: "1px solid #ccc", backgroundColor: "#fff", cursor: "pointer", textAlign: "left" }}
+                  className="block w-full border-t border-border px-3 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50"
                 >
                   Import from Swagger/OpenAPI
                 </button>
@@ -99,53 +102,50 @@ export function ApiListScreen({
           </div>
         )}
       </div>
-      <div style={{ flex: 1, padding: "20px", overflow: "auto" }}>
-        {loading && <p>Loading APIs...</p>}
+      <div className="flex-1 overflow-auto p-5">
+        {loading && <p className="text-sm text-muted">Loading APIs...</p>}
         {!loading && error && (
           <div>
-            <p style={{ color: "red" }}>{error}</p>
-            <button onClick={() => void refetch()} style={{ padding: "6px 12px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
+            <p className="text-sm text-error">{error}</p>
+            <Button variant="secondary" size="sm" onClick={() => void refetch()}>
               Retry
-            </button>
+            </Button>
           </div>
         )}
-        {!loading && !error && apis.length === 0 && <p style={{ color: "#666" }}>No APIs yet in this Project.</p>}
+        {!loading && !error && apis.length === 0 && <p className="text-sm text-muted">No APIs yet in this Project.</p>}
         {!loading && !error && apis.length > 0 && (
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <table className="w-full border-collapse">
             <thead>
-              <tr style={{ borderBottom: "2px solid #000" }}>
-                <th style={{ textAlign: "left", padding: "10px", borderBottom: "1px solid #ccc" }}>Method</th>
-                <th style={{ textAlign: "left", padding: "10px", borderBottom: "1px solid #ccc" }}>Path</th>
-                <th style={{ textAlign: "left", padding: "10px", borderBottom: "1px solid #ccc" }}>Name</th>
-                <th style={{ padding: "10px", borderBottom: "1px solid #ccc" }}>Actions</th>
+              <tr>
+                <th className={thClass}>Method</th>
+                <th className={thClass}>Path</th>
+                <th className={thClass}>Name</th>
+                <th className={`${thClass} text-center`}>Actions</th>
               </tr>
             </thead>
             <tbody>
               {apis.map((api) => (
-                <tr key={api.apiId} style={{ borderBottom: "1px solid #ccc" }}>
-                  <td style={{ padding: "10px" }}>{api.httpMethod}</td>
-                  <td style={{ padding: "10px" }}>
-                    <button onClick={() => onSelectApi(api.apiId)} style={{ border: "none", background: "none", padding: 0, color: "#000", textDecoration: "underline", cursor: "pointer", fontFamily: "inherit", fontSize: "inherit" }}>
+                <tr key={api.apiId} className={trHoverClass}>
+                  <td className={tdClass}>
+                    <HttpMethodBadge method={api.httpMethod} />
+                  </td>
+                  <td className={tdClass}>
+                    <button
+                      onClick={() => onSelectApi(api.apiId)}
+                      className="cursor-pointer border-none bg-transparent p-0 font-mono text-sm text-gray-900 underline"
+                    >
                       {api.path}
                     </button>
                   </td>
-                  <td style={{ padding: "10px" }}>{api.apiName}</td>
-                  <td style={{ padding: "10px", textAlign: "center" }}>
-                    <button
-                      onClick={() => onSelectApi(api.apiId)}
-                      disabled={projectInactive}
-                      style={{ padding: "4px 8px", border: "1px solid #000", backgroundColor: "#fff", cursor: projectInactive ? "not-allowed" : "pointer", marginRight: "5px", opacity: projectInactive ? 0.5 : 1 }}
-                    >
+                  <td className={tdClass}>{api.apiName}</td>
+                  <td className={`${tdClass} text-center`}>
+                    <Button variant="secondary" size="sm" className="mr-1.5" onClick={() => onSelectApi(api.apiId)} disabled={projectInactive}>
                       Edit
-                    </button>
+                    </Button>
                     {isAdmin && (
-                      <button
-                        onClick={() => { setDeleteError(null); setDeleteTarget(api); }}
-                        disabled={projectInactive}
-                        style={{ padding: "4px 8px", border: "1px solid #000", backgroundColor: "#fff", cursor: projectInactive ? "not-allowed" : "pointer", color: "red", opacity: projectInactive ? 0.5 : 1 }}
-                      >
+                      <Button variant="danger" size="sm" onClick={() => { setDeleteError(null); setDeleteTarget(api); }} disabled={projectInactive}>
                         Delete
-                      </button>
+                      </Button>
                     )}
                   </td>
                 </tr>

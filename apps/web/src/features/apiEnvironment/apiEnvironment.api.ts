@@ -11,6 +11,7 @@ import type {
   ImportOutcome,
   PreviewImportResult,
 } from "./apiEnvironment.types";
+import type { AuthenticationConfiguration, PutAuthenticationConfigurationPayload, PutCredentialPayload } from "./authentication.types";
 import type { PutRequestInputPayload, RequestInputDefinition } from "./requestInput.types";
 
 export interface ListApisParams {
@@ -157,4 +158,55 @@ export function putRequestInput(
   accessToken: string,
 ): Promise<RequestInputDefinition> {
   return apiClient.put<RequestInputDefinition>(`/projects/${projectId}/apis/${apiId}/request-input`, payload, accessToken);
+}
+
+// API-AUTH-001
+export function getAuthenticationConfiguration(
+  projectId: string,
+  apiId: string,
+  environmentId: string,
+  accessToken: string,
+): Promise<AuthenticationConfiguration> {
+  return apiClient.get<AuthenticationConfiguration>(
+    `/projects/${projectId}/apis/${apiId}/environment-configs/${environmentId}/authentication`,
+    accessToken,
+  );
+}
+
+// API-AUTH-002
+export function putAuthenticationConfiguration(
+  projectId: string,
+  apiId: string,
+  environmentId: string,
+  payload: PutAuthenticationConfigurationPayload,
+  accessToken: string,
+): Promise<AuthenticationConfiguration> {
+  return apiClient.put<AuthenticationConfiguration>(
+    `/projects/${projectId}/apis/${apiId}/environment-configs/${environmentId}/authentication`,
+    payload,
+    accessToken,
+  );
+}
+
+// API-AUTH-003
+export function putCredential(
+  projectId: string,
+  apiId: string,
+  environmentId: string,
+  payload: PutCredentialPayload,
+  accessToken: string,
+): Promise<AuthenticationConfiguration> {
+  return apiClient.put<AuthenticationConfiguration>(
+    `/projects/${projectId}/apis/${apiId}/environment-configs/${environmentId}/authentication/credential`,
+    payload,
+    accessToken,
+  );
+}
+
+// API-AUTH-004
+export function deleteCredential(projectId: string, apiId: string, environmentId: string, accessToken: string): Promise<AuthenticationConfiguration> {
+  return apiClient.delete<AuthenticationConfiguration>(
+    `/projects/${projectId}/apis/${apiId}/environment-configs/${environmentId}/authentication/credential`,
+    accessToken,
+  );
 }

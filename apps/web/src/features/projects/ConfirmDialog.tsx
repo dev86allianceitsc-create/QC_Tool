@@ -20,17 +20,22 @@ export function ConfirmDialog({
   onCancel: () => void;
 }) {
   return (
-    <div style={{ position: "fixed", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", backgroundColor: "rgba(0,0,0,0.5)" }}>
-      <div style={{ backgroundColor: "#fff", border: "1px solid #000", padding: "20px", width: "400px", textAlign: "center" }}>
-        <h3>{title}</h3>
-        <p>{message}</p>
-        <div style={{ display: "flex", gap: "10px" }}>
-          <button onClick={onCancel} style={{ flex: 1, padding: "10px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer" }}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="w-full max-w-[400px] rounded-lg border border-border bg-white p-5 text-center shadow-lg">
+        <h3 className="m-0 mb-2 text-base font-semibold text-gray-900">{title}</h3>
+        <p className="m-0 mb-4 text-sm text-muted">{message}</p>
+        <div className="flex gap-2.5">
+          <button
+            onClick={onCancel}
+            className="flex-1 cursor-pointer rounded-md border border-border bg-white px-3 py-2 text-sm font-medium text-gray-900 hover:bg-gray-50"
+          >
             {cancelLabel}
           </button>
           <button
             onClick={onConfirm}
-            style={{ flex: 1, padding: "10px", border: "1px solid #000", backgroundColor: "#fff", cursor: "pointer", color: danger ? "red" : undefined }}
+            className={`flex-1 cursor-pointer rounded-md border px-3 py-2 text-sm font-medium ${
+              danger ? "border-error text-error hover:bg-error-light" : "border-primary bg-primary text-white hover:bg-primary-hover"
+            }`}
           >
             {confirmLabel}
           </button>

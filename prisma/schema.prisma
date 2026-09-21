@@ -24,9 +24,23 @@
 // their sole source of truth (Section 5). Run Value, payload, credential and
 // Authentication data remain out of scope in 3B.
 //
+// Group 3C — Authentication & Version implementation.
+// Source of truth: document/requirement/03_API_Configuration/3C_Authentication_Version
+// (REQ-SEC-002 CONFIRMED, REQ-AUTH-001/002/003 REVISED DRAFT) and the
+// approved implementation plan (2026-09-21). Credential scope = api_id +
+// environment_id + Authentication Configuration (REQ-SEC-002 Section 5); no
+// row = auth_type NONE implicitly, same "no row = default state" convention
+// as api_environment_configs. No Shared/Reusable Credential Library, no Copy
+// Credential (MVP boundary). Secret values (password / bearer token) are
+// encrypted at rest (AES-256-GCM, app-level key) and never returned in
+// plaintext by any endpoint, to any actor. API/DB Version (REQ-VER-001) has
+// no backend persistence in this scope — Run persistence is deferred, so
+// Version stays a transient UI-only field (Run Preparation), not modeled here.
+//
 // Scope: users, user_sessions, projects, project_memberships, audit_logs,
 // api_configurations, environments, api_environment_configs,
-// request_parameter_definitions, request_body_definitions.
+// request_parameter_definitions, request_body_definitions,
+// authentication_configurations.
 
 datasource db {
   provider = "postgresql"
@@ -222,6 +236,7 @@ model ApiConfiguration {
 
   parameterDefinitions RequestParameterDefinition[]
   bodyDefinition       RequestBodyDefinition?
+  authConfigs          AuthenticationConfiguration[]
 
   @@index([projectId, deletedAt], map: "idx_api_configurations_project_deleted")
   @@map("api_configurations")
@@ -260,7 +275,8 @@ model Environment {
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
   note      String?  @db.Text
 
-  configs ApiEnvironmentConfig[]
+  configs     ApiEnvironmentConfig[]
+  authConfigs AuthenticationConfiguration[]
 
   @@index([projectId], map: "idx_environments_project_id")
   @@map("environments")
@@ -352,4 +368,57 @@ model RequestBodyDefinition {
   note      String?  @db.Text
 
   @@map("request_body_definitions")
+}
+
+// authentication_configurations — Group 3C (REQ-SEC-002 CONFIRMED,
+// REQ-AUTH-001/002/003). No row = auth_type NONE implicitly, same "no row =
+// Not configured" convention as api_environment_configs. Relationship
+// identity = (api_id, environment_id) — credential isolation boundary per
+// REQ-SEC-002 Section 5; never shared/copied across API or Environment.
+//
+// LOGIN_FORM non-secret config (login_url, username, username_field,
+// password_field, token_response_path) is Credential Metadata per
+// REQ-SEC-002's terminology table and may be read by Admin and User with
+// Project Access. The secret columns below are Secret Credential Value and
+// are NEVER returned in plaintext by any endpoint, to any actor — only
+// Configured/Not configured status is exposed. Exactly one secret pair is
+// populated at a time, matching the currently selected auth_type; switching
+// auth_type (CL-3C-02, REQ-AUTH-003) clears the previous type's secret in
+// the same mutation.
+model AuthenticationConfiguration {
+  apiId         String           @map("api_id") @db.Uuid
+  api           ApiConfiguration @relation(fields: [apiId], references: [apiId], onDelete: Restrict)
+  environmentId String           @map("environment_id") @db.Uuid
+  environment   Environment      @relation(fields: [environmentId], references: [environmentId], onDelete: Restrict)
+
+  // auth_type domain: NONE | LOGIN_FORM | BEARER_TOKEN. Enforced via raw
+  // CHECK ck_authentication_configurations_auth_type, not modeled here.
+  authType String @map("auth_type") @db.VarChar(20)
+
+  // LOGIN_FORM config — non-secret, null unless auth_type = LOGIN_FORM.
+  loginUrl          String? @map("login_url") @db.VarChar(2048)
+  username          String? @db.VarChar(255)
+  usernameField     String? @map("username_field") @db.VarChar(100)
+  passwordField     String? @map("password_field") @db.VarChar(100)
+  tokenResponsePath String? @map("token_response_path") @db.VarChar(200)
+
+  // Secret, encrypted at rest (AES-256-GCM, app-level CREDENTIAL_ENCRYPTION_KEY).
+  // Populated only when auth_type = LOGIN_FORM and a password has been set.
+  passwordCiphertext Bytes? @map("password_ciphertext")
+  passwordIv         Bytes? @map("password_iv")
+  passwordAuthTag    Bytes? @map("password_auth_tag")
+
+  // Secret, encrypted at rest. Populated only when auth_type = BEARER_TOKEN
+  // and a token has been set.
+  bearerTokenCiphertext Bytes? @map("bearer_token_ciphertext")
+  bearerTokenIv         Bytes? @map("bearer_token_iv")
+  bearerTokenAuthTag    Bytes? @map("bearer_token_auth_tag")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+  note      String?  @db.Text
+
+  @@id([apiId, environmentId], map: "pk_authentication_configurations")
+  @@index([environmentId], map: "idx_authentication_configurations_environment_id")
+  @@map("authentication_configurations")
 }

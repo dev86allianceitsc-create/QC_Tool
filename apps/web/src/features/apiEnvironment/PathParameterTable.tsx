@@ -1,5 +1,5 @@
-import type { CSSProperties } from "react";
 import type { PathParameterDefinition } from "./requestInput.types";
+import { thClass, tdClass } from "../../components/ui/table";
 
 // UI-INP-02: Path Parameters are auto-detected from {placeholder} tokens in
 // the API Path. Read-only — no rename, no Add/Delete, always Required
@@ -7,24 +7,24 @@ import type { PathParameterDefinition } from "./requestInput.types";
 export function PathParameterTable({ pathParameters }: { pathParameters: PathParameterDefinition[] }) {
   return (
     <div>
-      <h4 style={{ margin: "0 0 8px 0" }}>Path Parameters</h4>
+      <h4 className="m-0 mb-2 text-sm font-semibold text-gray-900">Path Parameters</h4>
       {pathParameters.length === 0 ? (
-        <p style={{ color: "#666", fontSize: "13px" }}>No path parameters detected.</p>
+        <p className="text-xs text-muted">No path parameters detected.</p>
       ) : (
-        <table style={{ width: "100%", borderCollapse: "collapse", border: "1px solid #ccc" }}>
+        <table className="w-full border-collapse rounded-md border border-border">
           <thead>
             <tr>
-              <th style={headerCellStyle}>Name</th>
-              <th style={headerCellStyle}>Required</th>
-              <th style={headerCellStyle}>Source</th>
+              <th className={thClass}>Name</th>
+              <th className={thClass}>Required</th>
+              <th className={thClass}>Source</th>
             </tr>
           </thead>
           <tbody>
             {pathParameters.map((param) => (
               <tr key={param.name}>
-                <td style={cellStyle}>{param.name}</td>
-                <td style={cellStyle}>Yes</td>
-                <td style={cellStyle}>Auto-detected</td>
+                <td className={`${tdClass} font-mono`}>{param.name}</td>
+                <td className={tdClass}>Yes</td>
+                <td className={tdClass}>Auto-detected</td>
               </tr>
             ))}
           </tbody>
@@ -33,6 +33,3 @@ export function PathParameterTable({ pathParameters }: { pathParameters: PathPar
     </div>
   );
 }
-
-const headerCellStyle: CSSProperties = { textAlign: "left", padding: "8px", borderBottom: "1px solid #ccc", fontSize: "13px" };
-const cellStyle: CSSProperties = { padding: "8px", borderBottom: "1px solid #eee", fontSize: "13px" };

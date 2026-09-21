@@ -52,7 +52,7 @@ export interface ApiEnvironmentConfigListItem {
   allowRun: boolean;
   urlStatus: "CONFIGURED" | "NOT_CONFIGURED";
   fullUrl: string | null;
-  credentialStatus: "UNAVAILABLE_IN_3A";
+  credentialStatus: "NOT_REQUIRED" | "CONFIGURED" | "NOT_CONFIGURED";
 }
 
 export type PreviewCandidateStatus = "VALID" | "DUPLICATE" | "INVALID";

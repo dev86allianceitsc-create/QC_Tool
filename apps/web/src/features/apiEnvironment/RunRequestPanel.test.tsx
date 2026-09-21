@@ -172,3 +172,37 @@ describe("RunRequestPanel", () => {
     expect(screen.getByText("Run")).toBeDisabled();
   });
 });
+
+describe("RunRequestPanel — inline variant", () => {
+  it("renders embedded content with no dialog role, no backdrop, and no Close button", () => {
+    render(
+      <RunRequestPanel
+        variant="inline"
+        definition={definitionWith({ queryParameters: [{ name: "status", required: false }] })}
+        environments={ENVIRONMENTS}
+        selectedEnvironmentId="e1"
+        onSelectEnvironment={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.queryByText("Close")).not.toBeInTheDocument();
+    expect(screen.getByText("Run Preparation")).toBeInTheDocument();
+    expect(screen.getByLabelText(/^status/)).toBeInTheDocument();
+    expect(screen.getByText("Run")).toBeDisabled();
+  });
+
+  it("shows the target Environment as read-only context, not a 3rd Environment selector (Execution Target and the API header already own selection)", () => {
+    render(
+      <RunRequestPanel
+        variant="inline"
+        definition={definitionWith({})}
+        environments={ENVIRONMENTS}
+        selectedEnvironmentId="e1"
+        onSelectEnvironment={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+    expect(screen.getByText("Preparing values for")).toBeInTheDocument();
+    expect(screen.getByText("Dev")).toBeInTheDocument();
+  });
+});

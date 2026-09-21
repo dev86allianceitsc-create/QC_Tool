@@ -11,7 +11,7 @@ const CONFIG = {
   allowRun: true,
   urlStatus: "NOT_CONFIGURED",
   fullUrl: null,
-  credentialStatus: "UNAVAILABLE_IN_3A",
+  credentialStatus: "NOT_REQUIRED",
 };
 
 afterEach(() => {
