@@ -100,15 +100,19 @@ function renderScreen() {
   );
 }
 
-describe("ApiDetailScreen — tabs", () => {
-  it("shows the guided steps in order: Endpoint, Request Input, Authentication, Review & Run", async () => {
+async function waitForEnabledRunApiButton() {
+  return screen.findByText((_, el) => el?.tagName === "BUTTON" && el.textContent === "Run API" && !(el as HTMLButtonElement).disabled);
+}
+
+describe("ApiDetailScreen — Configuration steps", () => {
+  it("shows the guided Configuration steps in order: Endpoint, Request Input, Authentication", async () => {
     stubFetch();
     renderScreen();
     await screen.findByText("Fetch a widget by id.");
 
-    const nav = screen.getByRole("navigation", { name: "API Workspace steps" });
+    const nav = screen.getByRole("navigation", { name: "Configuration steps" });
     const stepButtons = within(nav).getAllByRole("button");
-    expect(stepButtons.map((b) => b.getAttribute("aria-label"))).toEqual(["Endpoint", "Request Input", "Authentication", "Review & Run"]);
+    expect(stepButtons.map((b) => b.getAttribute("aria-label"))).toEqual(["Endpoint", "Request Input", "Authentication"]);
   });
 
   it("renders the Request Input tab content when selected, loaded from GET", async () => {
@@ -131,16 +135,6 @@ describe("ApiDetailScreen — tabs", () => {
     await screen.findByText("Fetch a widget by id.");
 
     expect(screen.getByText("Fetch a widget by id.")).toBeInTheDocument();
-  });
-
-  it("still renders the existing Review & Run tab content (non-regression)", async () => {
-    stubFetch();
-    renderScreen();
-    await screen.findByText("Fetch a widget by id.");
-
-    fireEvent.click(screen.getByText("Review & Run"));
-
-    expect(await screen.findByText("Full URL")).toBeInTheDocument();
   });
 
   it("renders the Authentication tab with real configuration, driven by the API", async () => {
@@ -210,7 +204,7 @@ describe("ApiDetailScreen — Request Input persistence", () => {
 });
 
 describe("ApiDetailScreen — Run API", () => {
-  it("navigates to Review & Run and shows the Run Preparation fields inline, reflecting the persisted Definition", async () => {
+  it("navigates to the Run API area on click, never executing a request immediately", async () => {
     stubFetch({
       ...REQUEST_INPUT,
       queryParameters: [{ name: "status", required: false }],
@@ -218,25 +212,116 @@ describe("ApiDetailScreen — Run API", () => {
     renderScreen();
     await screen.findByText("Fetch a widget by id.");
 
-    await screen.findByText((_, el) => el?.tagName === "BUTTON" && el.textContent === "Run API" && !(el as HTMLButtonElement).disabled);
+    await waitForEnabledRunApiButton();
     fireEvent.click(screen.getByText("Run API"));
 
     expect(await screen.findByText("Full URL")).toBeInTheDocument();
-    expect(screen.queryByRole("dialog", { name: "Run Preparation" })).not.toBeInTheDocument();
-    expect(screen.getByText("Run Preparation")).toBeInTheDocument();
+    const nav = screen.getByRole("navigation", { name: "Run API steps" });
+    expect(within(nav).getAllByRole("button").map((b) => b.getAttribute("aria-label"))).toEqual([
+      "Execution Target",
+      "Request Values",
+      "Version Metadata",
+      "Request Preview",
+      "Execute",
+    ]);
+
+    fireEvent.click(within(nav).getByRole("button", { name: "Request Values" }));
     expect(screen.getByLabelText(/^status/)).toBeInTheDocument();
   });
 
-  it("does not execute any request when Review & Run is shown", async () => {
+  it("does not execute any request when the Run API area is shown", async () => {
     const fetchMock = stubFetch();
     renderScreen();
     await screen.findByText("Fetch a widget by id.");
-    await screen.findByText((_, el) => el?.tagName === "BUTTON" && el.textContent === "Run API" && !(el as HTMLButtonElement).disabled);
+    await waitForEnabledRunApiButton();
     fetchMock.mockClear();
 
     fireEvent.click(screen.getByText("Run API"));
     await screen.findByText("Full URL");
 
-    expect(fetchMock).not.toHaveBeenCalled();
+    // Showing the Run API area may still read configuration (e.g. the
+    // selected Environment's Authentication Configuration), but it must
+    // never mutate anything and must never execute the API under test: Run
+    // execution is out of scope for this release.
+    for (const [url, init] of fetchMock.mock.calls as [string, RequestInit | undefined][]) {
+      expect((init?.method ?? "GET").toUpperCase()).toBe("GET");
+      expect(url).not.toMatch(/\/(run|runs|execute)\b/);
+    }
+  });
+
+  it("returns to Configuration via ← Configuration, keeping the selected API and Environment context", async () => {
+    stubFetch();
+    renderScreen();
+    await screen.findByText("Fetch a widget by id.");
+    await waitForEnabledRunApiButton();
+
+    fireEvent.click(screen.getByText("Run API"));
+    await screen.findByText("Full URL");
+    expect(screen.getByRole("combobox", { name: "Environment" })).toHaveValue("e1");
+
+    fireEvent.click(screen.getByText("← Configuration"));
+
+    expect(await screen.findByRole("navigation", { name: "Configuration steps" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Environment" })).toHaveValue("e1");
+    expect(screen.getByText("Fetch a widget by id.")).toBeInTheDocument();
+  });
+});
+
+describe("ApiDetailScreen — Environment selection excludes INACTIVE", () => {
+  function stubFetchWithInactiveEnvironment() {
+    const fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+      if (url.includes("/request-input")) {
+        return Promise.resolve(mockJsonResponse(200, REQUEST_INPUT));
+      }
+      if (url.includes("/authentication")) {
+        return Promise.resolve(mockJsonResponse(200, AUTH_CONFIG));
+      }
+      if (url.includes("/environment-configs")) {
+        return Promise.resolve(mockJsonResponse(200, CONFIGS_PAGE));
+      }
+      if (url.includes("/environments")) {
+        return Promise.resolve(
+          mockJsonResponse(200, {
+            items: [
+              { environmentId: "e1", environmentName: "Dev", classification: "NON_PRODUCTION", allowRun: true, environmentStatus: "ACTIVE", createdAt: "t", updatedAt: "t" },
+              { environmentId: "e2", environmentName: "Prod", classification: "PRODUCTION", allowRun: false, environmentStatus: "INACTIVE", createdAt: "t", updatedAt: "t" },
+            ],
+            page: 1,
+            pageSize: 100,
+            totalItems: 2,
+            totalPages: 1,
+          }),
+        );
+      }
+      if (url.includes(`/apis/${API.apiId}`)) {
+        return Promise.resolve(mockJsonResponse(200, API));
+      }
+      return Promise.resolve(mockJsonResponse(404, {}));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  it("omits the INACTIVE Environment from the Environment selector and defaults to an Active one", async () => {
+    stubFetchWithInactiveEnvironment();
+    renderScreen();
+    await screen.findByText("Fetch a widget by id.");
+
+    const select = screen.getByRole("combobox", { name: "Environment" }) as HTMLSelectElement;
+    expect(within(select).getAllByRole("option").map((o) => o.textContent)).toEqual(["Dev"]);
+    expect(select.value).toBe("e1");
+  });
+
+  it("also omits the INACTIVE Environment from the Run API Execution Target list", async () => {
+    stubFetchWithInactiveEnvironment();
+    renderScreen();
+    await screen.findByText("Fetch a widget by id.");
+    await waitForEnabledRunApiButton();
+
+    fireEvent.click(screen.getByText("Run API"));
+    await screen.findByText("Full URL");
+
+    expect(screen.getByText("1 Environment in this Project")).toBeInTheDocument();
+    expect(screen.queryByText("Prod")).not.toBeInTheDocument();
   });
 });
