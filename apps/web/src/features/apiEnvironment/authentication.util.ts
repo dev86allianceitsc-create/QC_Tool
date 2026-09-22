@@ -5,11 +5,30 @@ import type { AuthenticationConfiguration, AuthType, PutAuthenticationConfigurat
 // sync deliberately so drafts get inline feedback before a round trip; the
 // backend remains the source of truth and re-validates independently.
 
+export const AUTH_TYPE_LABELS: Record<AuthType, string> = {
+  NONE: "None",
+  LOGIN_FORM: "Login Form",
+  BEARER_TOKEN: "Bearer Token",
+};
+
 export const AUTH_TYPE_OPTIONS: { value: AuthType; label: string }[] = [
-  { value: "NONE", label: "None" },
-  { value: "LOGIN_FORM", label: "Login Form" },
-  { value: "BEARER_TOKEN", label: "Bearer Token" },
+  { value: "NONE", label: AUTH_TYPE_LABELS.NONE },
+  { value: "LOGIN_FORM", label: AUTH_TYPE_LABELS.LOGIN_FORM },
+  { value: "BEARER_TOKEN", label: AUTH_TYPE_LABELS.BEARER_TOKEN },
 ];
+
+// CL-3C-02 / AC-UI-3C-03: every Authentication Type change is confirmed
+// first. The wording follows the AnD UI's suggested copy when a stored
+// credential is actually about to be discarded, and drops that sentence
+// when there is none — the warning must describe what really happens, not
+// threaten the loss of a credential that was never configured.
+export function changeTypeConfirmMessage(fromLabel: string, toLabel: string, credentialConfigured: boolean): string {
+  const lead = `This changes the Authentication Type from ${fromLabel} to ${toLabel} for this API in this Environment.`;
+  if (credentialConfigured) {
+    return `${lead} The credential saved for ${fromLabel} will be removed and cannot be recovered automatically. Continue?`;
+  }
+  return `${lead} Any configuration saved for ${fromLabel} will be discarded. Continue?`;
+}
 
 export interface LoginFormDraft {
   loginUrl: string;

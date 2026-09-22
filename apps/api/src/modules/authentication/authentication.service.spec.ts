@@ -306,4 +306,203 @@ describe("AuthenticationService", () => {
       expect(auditWriter.record).toHaveBeenCalledWith(expect.objectContaining({ eventType: "CREDENTIAL_REMOVED" }), prisma);
     });
   });
+
+  // REQ-AUTH-001 VER of the Login Form contract: every required field is
+  // enforced server-side, independently of the client's own validation.
+  describe("putConfiguration — LOGIN_FORM field requirements", () => {
+    const BASE = {
+      authType: "LOGIN_FORM",
+      loginUrl: "https://target.example.com/login",
+      username: "svc-account",
+      usernameField: "user",
+      passwordField: "pass",
+      tokenResponsePath: "data.access_token",
+    };
+
+    async function expectRejected(overrides: Record<string, unknown>, status: number) {
+      const { service, prisma } = makeService();
+      const error = await service
+        .putConfiguration("p-1", "a-1", "e-1", { ...BASE, ...overrides } as never, "user-1")
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(BusinessException);
+      expect((error as BusinessException).getStatus()).toBe(status);
+      expect(prisma.authenticationConfiguration.upsert).not.toHaveBeenCalled();
+    }
+
+    it("rejects a missing loginUrl, username, usernameField, passwordField or tokenResponsePath with 400", async () => {
+      await expectRejected({ loginUrl: "" }, 400);
+      await expectRejected({ username: "" }, 400);
+      await expectRejected({ usernameField: "" }, 400);
+      await expectRejected({ passwordField: "" }, 400);
+      await expectRejected({ tokenResponsePath: "" }, 400);
+    });
+
+    it("rejects a tokenResponsePath that is not a dot-separated identifier path with 422", async () => {
+      await expectRejected({ tokenResponsePath: "data[0].token" }, 422);
+      await expectRejected({ tokenResponsePath: ".access_token" }, 422);
+      await expectRejected({ tokenResponsePath: "data..token" }, 422);
+      await expectRejected({ tokenResponsePath: "data.access token" }, 422);
+    });
+
+    it("accepts a single-segment and a nested tokenResponsePath", async () => {
+      for (const tokenResponsePath of ["access_token", "data.auth.access_token"]) {
+        const { service, prisma } = makeService();
+        prisma.authenticationConfiguration.findUnique.mockResolvedValue(null);
+        prisma.authenticationConfiguration.upsert.mockResolvedValue({
+          ...BASE,
+          tokenResponsePath,
+          updatedAt: new Date(),
+          passwordCiphertext: null,
+          bearerTokenCiphertext: null,
+        });
+
+        const result = await service.putConfiguration("p-1", "a-1", "e-1", { ...BASE, tokenResponsePath } as never, "user-1");
+
+        expect(result.tokenResponsePath).toBe(tokenResponsePath);
+      }
+    });
+
+    it("stores no Login Form metadata for NONE or BEARER_TOKEN", async () => {
+      const { service, prisma } = makeService();
+      prisma.authenticationConfiguration.findUnique.mockResolvedValue(null);
+      prisma.authenticationConfiguration.upsert.mockResolvedValue({
+        authType: "BEARER_TOKEN",
+        loginUrl: null,
+        username: null,
+        usernameField: null,
+        passwordField: null,
+        tokenResponsePath: null,
+        updatedAt: new Date(),
+        passwordCiphertext: null,
+        bearerTokenCiphertext: null,
+      });
+
+      await service.putConfiguration("p-1", "a-1", "e-1", { ...BASE, authType: "BEARER_TOKEN" } as never, "user-1");
+
+      expect(prisma.authenticationConfiguration.upsert.mock.calls[0][0].create).toMatchObject({
+        loginUrl: null,
+        username: null,
+        usernameField: null,
+        passwordField: null,
+        tokenResponsePath: null,
+      });
+    });
+  });
+
+  // REQ-SEC-003 / §7: an INACTIVE Project freezes its configuration.
+  describe("INACTIVE Project", () => {
+    function inactiveProjectService() {
+      const made = makeService();
+      made.prisma.project.findFirst.mockResolvedValue({ projectId: "p-1", projectStatus: "INACTIVE", deletedAt: null });
+      return made;
+    }
+
+    it("rejects putConfiguration with 409 INVALID_STATE and writes nothing", async () => {
+      const { service, prisma, auditWriter } = inactiveProjectService();
+
+      const error = await service.putConfiguration("p-1", "a-1", "e-1", { authType: "NONE" } as never, "user-1").catch((e: unknown) => e);
+
+      expect((error as BusinessException).getStatus()).toBe(409);
+      expect(prisma.authenticationConfiguration.upsert).not.toHaveBeenCalled();
+      expect(auditWriter.record).not.toHaveBeenCalled();
+    });
+
+    it("rejects putCredential with 409 INVALID_STATE", async () => {
+      const { service, prisma } = inactiveProjectService();
+
+      const error = await service.putCredential("p-1", "a-1", "e-1", { token: "t" } as never, "user-1").catch((e: unknown) => e);
+
+      expect((error as BusinessException).getStatus()).toBe(409);
+      expect(prisma.authenticationConfiguration.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects removeCredential with 409 INVALID_STATE", async () => {
+      const { service, prisma } = inactiveProjectService();
+
+      const error = await service.removeCredential("p-1", "a-1", "e-1", "user-1").catch((e: unknown) => e);
+
+      expect((error as BusinessException).getStatus()).toBe(409);
+      expect(prisma.authenticationConfiguration.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects a soft-deleted Project with 404", async () => {
+      const { service, prisma } = makeService();
+      prisma.project.findFirst.mockResolvedValue(null);
+
+      const error = await service.putConfiguration("p-1", "a-1", "e-1", { authType: "NONE" } as never, "user-1").catch((e: unknown) => e);
+
+      expect((error as BusinessException).getStatus()).toBe(404);
+    });
+  });
+
+  describe("putCredential — the secret must match the configured type", () => {
+    it("rejects a missing password for LOGIN_FORM with 400", async () => {
+      const { service, prisma } = makeService();
+      prisma.authenticationConfiguration.findUnique.mockResolvedValue({
+        authType: "LOGIN_FORM",
+        passwordCiphertext: null,
+        bearerTokenCiphertext: null,
+      });
+
+      const error = await service.putCredential("p-1", "a-1", "e-1", { token: "a-token" } as never, "user-1").catch((e: unknown) => e);
+
+      expect((error as BusinessException).getStatus()).toBe(400);
+      expect(prisma.authenticationConfiguration.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects a missing token for BEARER_TOKEN with 400", async () => {
+      const { service, prisma } = makeService();
+      prisma.authenticationConfiguration.findUnique.mockResolvedValue({
+        authType: "BEARER_TOKEN",
+        passwordCiphertext: null,
+        bearerTokenCiphertext: null,
+      });
+
+      const error = await service.putCredential("p-1", "a-1", "e-1", { password: "p" } as never, "user-1").catch((e: unknown) => e);
+
+      expect((error as BusinessException).getStatus()).toBe(400);
+      expect(prisma.authenticationConfiguration.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects a token that is empty once the 'Bearer ' prefix is stripped, with 400", async () => {
+      const { service, prisma } = makeService();
+      prisma.authenticationConfiguration.findUnique.mockResolvedValue({
+        authType: "BEARER_TOKEN",
+        passwordCiphertext: null,
+        bearerTokenCiphertext: null,
+      });
+
+      const error = await service.putCredential("p-1", "a-1", "e-1", { token: "Bearer    " } as never, "user-1").catch((e: unknown) => e);
+
+      expect((error as BusinessException).getStatus()).toBe(400);
+      expect(prisma.authenticationConfiguration.update).not.toHaveBeenCalled();
+    });
+
+    it("writes only the secret column that belongs to the configured type", async () => {
+      const { service, prisma } = makeService();
+      prisma.authenticationConfiguration.findUnique.mockResolvedValue({
+        authType: "BEARER_TOKEN",
+        passwordCiphertext: null,
+        bearerTokenCiphertext: null,
+      });
+      prisma.authenticationConfiguration.update.mockResolvedValue({
+        authType: "BEARER_TOKEN",
+        loginUrl: null,
+        username: null,
+        usernameField: null,
+        passwordField: null,
+        tokenResponsePath: null,
+        updatedAt: new Date(),
+        passwordCiphertext: null,
+        bearerTokenCiphertext: Buffer.from("ct"),
+      });
+
+      await service.putCredential("p-1", "a-1", "e-1", { token: "raw-token" } as never, "user-1");
+
+      const data = prisma.authenticationConfiguration.update.mock.calls[0][0].data;
+      expect(data).toHaveProperty("bearerTokenCiphertext");
+      expect(data).not.toHaveProperty("passwordCiphertext");
+      expect(Buffer.from(data.bearerTokenCiphertext as Uint8Array).toString("utf8")).not.toContain("raw-token");
+    });
+  });
 });

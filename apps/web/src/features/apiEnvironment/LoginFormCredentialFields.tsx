@@ -11,13 +11,21 @@ import type { LoginFormDraft } from "./authentication.util";
 import type { CredentialStatus } from "./authentication.types";
 
 // UI-AUTH — non-secret Login Form config fields plus the Password secret
-// action (Configure/Replace/Remove). Password is never pre-filled (REQ-SEC-002:
-// a Secret Credential Value is never returned as plaintext) — configuring or
-// replacing always starts from an empty field.
+// action (Configure/Replace/Remove). The config fields (Login URL, Username,
+// Username Field, Password Field, Token Response Path) are always editable
+// once Login Form is selected — they must be, since validateLoginFormDraft
+// requires them before the Authentication Type can be saved as LOGIN_FORM in
+// the first place. The Password action stays gated on `typeSaved`: the
+// credential endpoint requires an existing LOGIN_FORM row server-side
+// (authentication.service.ts putCredential), so there is nothing to attach a
+// password to until the type itself has been saved. Password is never
+// pre-filled (REQ-SEC-002: a Secret Credential Value is never returned as
+// plaintext) — configuring or replacing always starts from an empty field.
 export function LoginFormCredentialFields({
   draft,
   onDraftChange,
   readOnly,
+  typeSaved,
   credentialStatus,
   saving,
   onSaveCredential,
@@ -26,6 +34,7 @@ export function LoginFormCredentialFields({
   draft: LoginFormDraft;
   onDraftChange: (next: LoginFormDraft) => void;
   readOnly?: boolean;
+  typeSaved: boolean;
   credentialStatus: CredentialStatus;
   saving?: boolean;
   onSaveCredential: (password: string) => Promise<void>;
@@ -90,30 +99,36 @@ export function LoginFormCredentialFields({
       </div>
 
       <div className="mt-5 border-t border-border pt-4">
-        <div className="flex flex-wrap items-center justify-between gap-2.5">
-          <h4 className="m-0 text-sm font-semibold text-gray-900">Password</h4>
-          <Badge tone={credentialStatus === "CONFIGURED" ? "success" : "warning"} label={credentialStatus === "CONFIGURED" ? "Configured" : "Not Configured"} />
-        </div>
-        {!readOnly && (
-          <div className="mt-3 flex flex-col gap-2.5">
-            <PasswordInput
-              label={credentialStatus === "CONFIGURED" ? "New Password (replaces the current one)" : "Password"}
-              value={passwordDraft}
-              onChange={(e) => setPasswordDraft(e.target.value)}
-              autoComplete="new-password"
-            />
-            {credentialError && <p className="m-0 text-sm text-error">{credentialError}</p>}
-            <div className="flex gap-2.5">
-              <Button variant="secondary" size="sm" onClick={() => void handleSaveCredential()} disabled={saving || !passwordDraft}>
-                {saving ? "Saving..." : credentialStatus === "CONFIGURED" ? "Replace" : "Configure"}
-              </Button>
-              {credentialStatus === "CONFIGURED" && (
-                <Button variant="danger" size="sm" onClick={() => setShowRemoveConfirm(true)} disabled={saving}>
-                  Remove
-                </Button>
-              )}
+        {typeSaved ? (
+          <>
+            <div className="flex flex-wrap items-center justify-between gap-2.5">
+              <h4 className="m-0 text-sm font-semibold text-gray-900">Password</h4>
+              <Badge tone={credentialStatus === "CONFIGURED" ? "success" : "warning"} label={credentialStatus === "CONFIGURED" ? "Configured" : "Not Configured"} />
             </div>
-          </div>
+            {!readOnly && (
+              <div className="mt-3 flex flex-col gap-2.5">
+                <PasswordInput
+                  label={credentialStatus === "CONFIGURED" ? "New Password (replaces the current one)" : "Password"}
+                  value={passwordDraft}
+                  onChange={(e) => setPasswordDraft(e.target.value)}
+                  autoComplete="new-password"
+                />
+                {credentialError && <p className="m-0 text-sm text-error">{credentialError}</p>}
+                <div className="flex gap-2.5">
+                  <Button variant="secondary" size="sm" onClick={() => void handleSaveCredential()} disabled={saving || !passwordDraft}>
+                    {saving ? "Saving..." : credentialStatus === "CONFIGURED" ? "Replace" : "Configure"}
+                  </Button>
+                  {credentialStatus === "CONFIGURED" && (
+                    <Button variant="danger" size="sm" onClick={() => setShowRemoveConfirm(true)} disabled={saving}>
+                      Remove
+                    </Button>
+                  )}
+                </div>
+              </div>
+            )}
+          </>
+        ) : (
+          <p className="m-0 text-sm text-muted">Save this Authentication Type before configuring its credential.</p>
         )}
       </div>
 
