@@ -2,6 +2,7 @@ import type { ApiEnvironmentConfigListItem } from "./apiEnvironment.types";
 import type { RunRequestValues } from "./requestInput.types";
 import { buildPreviewUrl } from "./runApi.util";
 import { Card } from "../../components/ui/Card";
+import { JsonHighlight } from "../../components/ui/JsonHighlight";
 
 // REVISION 3C-R01 — Run API / Request Preview: "Method, URL có thay path/
 // query, safe headers/body summary; auth type/status masked" — preview only,
@@ -56,7 +57,9 @@ export function RunRequestPreviewPanel({
       {values.bodyValue.trim() !== "" && (
         <div className="mt-3">
           <h4 className="m-0 mb-1 text-xs font-semibold text-gray-900">Body</h4>
-          <pre className="m-0 whitespace-pre-wrap break-all rounded-md bg-gray-50 p-2 font-mono text-xs text-gray-900">{values.bodyValue}</pre>
+          <pre className="m-0 whitespace-pre-wrap break-all rounded-md bg-gray-50 p-2 font-mono text-xs text-gray-900">
+            <JsonHighlight value={values.bodyValue} />
+          </pre>
         </div>
       )}
 

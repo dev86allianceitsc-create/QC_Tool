@@ -10,7 +10,15 @@ const ITEM_BASE = "block rounded-md px-3 py-2 text-sm font-medium transition-col
 const ITEM_ACTIVE = "bg-primary-light text-gray-900";
 const ITEM_INACTIVE = "text-gray-600 hover:bg-gray-50 hover:text-gray-900";
 
-export function GlobalSidebar({ isAdmin }: { isAdmin: boolean }) {
+export function GlobalSidebar({
+  isAdmin,
+  collapsed,
+  onToggle,
+}: {
+  isAdmin: boolean;
+  collapsed: boolean;
+  onToggle: () => void;
+}) {
   const location = useLocation();
 
   const items = [
@@ -21,10 +29,35 @@ export function GlobalSidebar({ isAdmin }: { isAdmin: boolean }) {
       : []),
   ];
 
+  if (collapsed) {
+    return (
+      <nav aria-label="Global" className="flex h-full w-12 shrink-0 flex-col border-r border-border bg-white">
+        <div className="flex h-[60px] shrink-0 items-center justify-center border-b border-border">
+          <button
+            onClick={onToggle}
+            aria-label="Expand sidebar"
+            title="Expand sidebar"
+            className="cursor-pointer rounded-md border-none bg-transparent p-1.5 text-base leading-none text-gray-500 hover:bg-gray-50 hover:text-gray-900"
+          >
+            »
+          </button>
+        </div>
+      </nav>
+    );
+  }
+
   return (
     <nav aria-label="Global" className="flex h-full w-56 shrink-0 flex-col border-r border-border bg-white">
-      <div className="flex h-[60px] shrink-0 items-center border-b border-border px-5">
+      <div className="flex h-[60px] shrink-0 items-center justify-between border-b border-border px-5">
         <img src={allianceLogo} alt="Alliance" className="h-7 w-auto" />
+        <button
+          onClick={onToggle}
+          aria-label="Collapse sidebar"
+          title="Collapse sidebar"
+          className="cursor-pointer rounded-md border-none bg-transparent p-1 text-base leading-none text-gray-500 hover:bg-gray-50 hover:text-gray-900"
+        >
+          «
+        </button>
       </div>
       <ul className="flex flex-col gap-1 p-3">
         {items.map((item) => (

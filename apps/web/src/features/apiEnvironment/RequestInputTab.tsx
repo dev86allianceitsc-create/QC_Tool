@@ -32,6 +32,7 @@ export function RequestInputTab({
   const [draft, setDraft] = useState<RequestInputDefinition>(definition);
   const [dialog, setDialog] = useState<DialogState>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [justSaved, setJustSaved] = useState(false);
 
   const dirty = draft !== definition;
 
@@ -73,6 +74,7 @@ export function RequestInputTab({
     try {
       const saved = await onSave(toPutPayload(draft));
       setDraft(saved);
+      setJustSaved(true);
     } catch (err) {
       setSaveError(err instanceof ApiError ? err.message : "Failed to save changes.");
     }
@@ -81,6 +83,7 @@ export function RequestInputTab({
   function handleCancel() {
     setDraft(definition);
     setSaveError(null);
+    setJustSaved(false);
   }
 
   return (
@@ -108,6 +111,7 @@ export function RequestInputTab({
       {!readOnly && (
         <div className="flex flex-col gap-2.5">
           {saveError && <p className="m-0 text-sm text-error">{saveError}</p>}
+          {!saveError && !dirty && justSaved && <p className="m-0 text-sm text-success">Saved.</p>}
           <div className="flex gap-2.5">
             <Button variant="secondary" onClick={handleCancel} disabled={!dirty}>
               Cancel changes

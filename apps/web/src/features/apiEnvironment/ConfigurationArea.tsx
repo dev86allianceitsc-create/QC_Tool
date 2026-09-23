@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { AuthenticationConfiguration, PutAuthenticationConfigurationPayload, PutCredentialPayload } from "./authentication.types";
 import { AuthenticationTab } from "./AuthenticationTab";
 import type { ApiDetail, ApiEnvironmentConfigListItem, EnvironmentListItem } from "./apiEnvironment.types";
@@ -32,6 +32,7 @@ export function ConfigurationArea({
   onUrlDraftChange,
   savingUrl,
   urlError,
+  urlSaved,
   onSaveUrl,
   requestInput,
   projectInactive,
@@ -57,6 +58,7 @@ export function ConfigurationArea({
   onUrlDraftChange: (environmentId: string, value: string) => void;
   savingUrl: boolean;
   urlError: string | null;
+  urlSaved: boolean;
   onSaveUrl: () => void;
   requestInput: {
     definition: RequestInputDefinition | null;
@@ -88,6 +90,11 @@ export function ConfigurationArea({
   guardedNavigate: (action: () => void) => void;
 }) {
   const [step, setStep] = useState<ConfigurationStep>("endpoint");
+  const [showFinishedMessage, setShowFinishedMessage] = useState(false);
+
+  useEffect(() => {
+    setShowFinishedMessage(false);
+  }, [step]);
 
   const steps: StepSidebarItem[] = [
     { key: "endpoint", label: "Endpoint", description: "Method, path, description, and Full URL." },
@@ -96,6 +103,7 @@ export function ConfigurationArea({
   ];
 
   const currentIndex = CONFIG_STEP_ORDER.indexOf(step);
+  const isLastStep = currentIndex >= CONFIG_STEP_ORDER.length - 1;
 
   return (
     <div className="flex flex-col gap-6 p-6 md:flex-row">
@@ -138,6 +146,7 @@ export function ConfigurationArea({
                 />
                 {!config?.fullUrl && <p className="mt-1.5 text-xs text-warning">No URL configured — Run is blocked for this API in this Environment.</p>}
                 {urlError && <p className="mt-1.5 text-xs text-error">{urlError}</p>}
+                {!urlError && urlSaved && <p className="mt-1.5 text-xs text-success">Full URL saved.</p>}
                 {!readOnlyConfig && (
                   <Button variant="secondary" size="sm" className="mt-2.5" onClick={onSaveUrl} disabled={savingUrl}>
                     {savingUrl ? "Saving..." : "Save URL"}
@@ -210,17 +219,22 @@ export function ConfigurationArea({
           />
         )}
 
-        <div className="mt-6 flex justify-between border-t border-border pt-4">
-          <Button variant="secondary" onClick={() => guardedNavigate(() => setStep(CONFIG_STEP_ORDER[currentIndex - 1]))} disabled={currentIndex <= 0}>
-            ← Back
-          </Button>
-          <Button
-            variant="secondary"
-            onClick={() => guardedNavigate(() => setStep(CONFIG_STEP_ORDER[currentIndex + 1]))}
-            disabled={currentIndex >= CONFIG_STEP_ORDER.length - 1}
-          >
-            Next →
-          </Button>
+        <div className="mt-6 border-t border-border pt-4">
+          {isLastStep && showFinishedMessage && <p className="m-0 mb-3 text-sm text-success">Configuration completed.</p>}
+          <div className="flex justify-between">
+            <Button variant="secondary" onClick={() => guardedNavigate(() => setStep(CONFIG_STEP_ORDER[currentIndex - 1]))} disabled={currentIndex <= 0}>
+              ← Back
+            </Button>
+            {isLastStep ? (
+              <Button variant="primary" onClick={() => setShowFinishedMessage(true)}>
+                Finish
+              </Button>
+            ) : (
+              <Button variant="secondary" onClick={() => guardedNavigate(() => setStep(CONFIG_STEP_ORDER[currentIndex + 1]))}>
+                Next →
+              </Button>
+            )}
+          </div>
         </div>
       </div>
     </div>

@@ -94,6 +94,8 @@ function renderScreen() {
       apiId="a1"
       accessToken="token-1"
       onBack={vi.fn()}
+      onViewExecution={vi.fn()}
+      onViewAllRuns={vi.fn()}
       onSessionExpired={vi.fn()}
       onAccessDenied={vi.fn()}
     />,

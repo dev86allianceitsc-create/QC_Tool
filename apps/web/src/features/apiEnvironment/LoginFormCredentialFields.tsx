@@ -43,6 +43,7 @@ export function LoginFormCredentialFields({
   const [passwordDraft, setPasswordDraft] = useState("");
   const [credentialError, setCredentialError] = useState<string | null>(null);
   const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
+  const [justSaved, setJustSaved] = useState<"saved" | "removed" | null>(null);
 
   function set<K extends keyof LoginFormDraft>(key: K, value: LoginFormDraft[K]) {
     onDraftChange({ ...draft, [key]: value });
@@ -58,6 +59,7 @@ export function LoginFormCredentialFields({
     try {
       await onSaveCredential(passwordDraft);
       setPasswordDraft("");
+      setJustSaved("saved");
     } catch (err) {
       setCredentialError(err instanceof ApiError ? err.message : "Unable to save Password.");
     }
@@ -68,6 +70,7 @@ export function LoginFormCredentialFields({
     setCredentialError(null);
     try {
       await onRemoveCredential();
+      setJustSaved("removed");
     } catch (err) {
       setCredentialError(err instanceof ApiError ? err.message : "Unable to remove Password.");
     }
@@ -110,10 +113,15 @@ export function LoginFormCredentialFields({
                 <PasswordInput
                   label={credentialStatus === "CONFIGURED" ? "New Password (replaces the current one)" : "Password"}
                   value={passwordDraft}
-                  onChange={(e) => setPasswordDraft(e.target.value)}
+                  onChange={(e) => {
+                    setPasswordDraft(e.target.value);
+                    setJustSaved(null);
+                  }}
                   autoComplete="new-password"
                 />
                 {credentialError && <p className="m-0 text-sm text-error">{credentialError}</p>}
+                {!credentialError && justSaved === "saved" && <p className="m-0 text-sm text-success">Password saved.</p>}
+                {!credentialError && justSaved === "removed" && <p className="m-0 text-sm text-success">Password removed.</p>}
                 <div className="flex gap-2.5">
                   <Button variant="secondary" size="sm" onClick={() => void handleSaveCredential()} disabled={saving || !passwordDraft}>
                     {saving ? "Saving..." : credentialStatus === "CONFIGURED" ? "Replace" : "Configure"}

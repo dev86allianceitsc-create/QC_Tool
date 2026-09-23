@@ -7,26 +7,36 @@ import { ConfigurationArea } from "./ConfigurationArea";
 import { CreateEditApiModal } from "./CreateEditApiModal";
 import { InactiveBanner } from "./InactiveBanner";
 import { RunApiArea } from "./RunApiArea";
+import { RunHistoryArea } from "./RunHistoryArea";
 import { useApiDetail } from "./useApiDetail";
 import { useApiEnvironmentConfigs } from "./useApiEnvironmentConfigs";
 import { useAuthentication } from "./useAuthentication";
 import { useEnvironmentList } from "./useEnvironmentList";
 import { useRequestInput } from "./useRequestInput";
+import { useSingleRunExecution } from "./useSingleRunExecution";
 import { Button } from "../../components/ui/Button";
 import { HttpMethodBadge } from "../../components/ui/HttpMethodBadge";
 import type { StepReadiness } from "../../components/ui/StepSidebar";
+import { TabBar } from "../../components/ui/TabBar";
 
-type ApiWorkspaceArea = "configuration" | "run";
+type ApiWorkspaceArea = "configuration" | "run" | "history";
 
-// REVISION 3C-R01 — Separate Configuration & Run API. This screen is now a
-// thin shell: header (breadcrumb, Method/Path, Environment selector, Run API
-// nav button, Edit/Delete) plus the two areas below it. All data fetching
-// and the unsaved-changes guard stay here so state survives switching
-// between areas; ConfigurationArea/RunApiArea only render their own step
-// content from props — the underlying hooks/components (useRequestInput,
-// useApiEnvironmentConfigs, useAuthentication, RequestInputTab,
-// AuthenticationTab) are unchanged. The header "Run API" button only
-// navigates to the Run API area — it never executes a request.
+const WORKSPACE_TABS: { key: ApiWorkspaceArea; label: string }[] = [
+  { key: "configuration", label: "Configuration" },
+  { key: "run", label: "Run API" },
+  { key: "history", label: "Run History" },
+];
+
+// UI correction — Configuration / Run API / Run History as 3 horizontal,
+// same-level tabs below the API identity header (not a single toggle
+// button, and Run History is its own tab, never nested under Execute).
+// This screen stays a thin shell: header (breadcrumb, Method/Path,
+// Environment selector, Edit/Delete) plus the TabBar plus whichever area is
+// active. All data fetching and the unsaved-changes guard stay here so
+// state survives switching between areas; ConfigurationArea/RunApiArea only
+// render their own step content from props — the underlying
+// hooks/components (useRequestInput, useApiEnvironmentConfigs,
+// useAuthentication, RequestInputTab, AuthenticationTab) are unchanged.
 export function ApiDetailScreen({
   user,
   projectId,
@@ -34,8 +44,11 @@ export function ApiDetailScreen({
   apiId,
   accessToken,
   onBack,
+  onViewExecution,
+  onViewAllRuns,
   onSessionExpired,
   onAccessDenied,
+  onBackToBatch,
 }: {
   user: { email: string; role: Role };
   projectId: string;
@@ -43,8 +56,11 @@ export function ApiDetailScreen({
   apiId: string;
   accessToken: string | null;
   onBack: () => void;
+  onViewExecution: (runId: string, executionId: string) => void;
+  onViewAllRuns: () => void;
   onSessionExpired: () => void;
   onAccessDenied: () => void;
+  onBackToBatch?: () => void;
 }) {
   const isAdmin = user.role === "ADMIN";
   const projectInactive = projectStatus === "INACTIVE";
@@ -64,11 +80,13 @@ export function ApiDetailScreen({
   const [urlDraft, setUrlDraft] = useState<Record<string, string>>({});
   const [savingUrl, setSavingUrl] = useState(false);
   const [urlError, setUrlError] = useState<string | null>(null);
+  const [urlSaved, setUrlSaved] = useState(false);
   const [requestInputDirty, setRequestInputDirty] = useState(false);
   const [authenticationDirty, setAuthenticationDirty] = useState(false);
   const [pendingNav, setPendingNav] = useState<(() => void) | null>(null);
 
   const authentication = useAuthentication(projectId, apiId, selectedEnvironmentId, accessToken, onSessionExpired, onAccessDenied);
+  const runExecution = useSingleRunExecution(projectId, apiId, selectedEnvironmentId, accessToken, onSessionExpired, onAccessDenied);
 
   // INACTIVE Environments are not a valid Execution Target: an Admin
   // reactivates them from the Environments list, not from this per-API
@@ -84,6 +102,10 @@ export function ApiDetailScreen({
       setSelectedEnvironmentId(activeEnvironments[0].environmentId);
     }
   }, [activeEnvironments, selectedEnvironmentId]);
+
+  useEffect(() => {
+    setUrlSaved(false);
+  }, [selectedEnvironmentId]);
 
   if (loading) {
     return (
@@ -114,7 +136,6 @@ export function ApiDetailScreen({
   const config = selectedEnvironment ? configs.find((c) => c.environmentId === selectedEnvironment.environmentId) ?? null : null;
   const environmentInactive = selectedEnvironment?.environmentStatus === "INACTIVE";
   const readOnlyConfig = projectInactive || environmentInactive;
-  const canRun = !!requestInput.definition && activeEnvironments.length > 0;
 
   // UX-01: switching area/step (or, for Authentication, switching
   // Environment) away from an unsaved draft would silently drop it (Full URL
@@ -175,8 +196,10 @@ export function ApiDetailScreen({
     const value = urlDraft[selectedEnvironment.environmentId] ?? config?.fullUrl ?? "";
     setSavingUrl(true);
     setUrlError(null);
+    setUrlSaved(false);
     try {
       await putConfig(selectedEnvironment.environmentId, value.trim());
+      setUrlSaved(true);
     } catch (err) {
       setUrlError(err instanceof ApiError ? err.message : "Unable to save Full URL.");
     } finally {
@@ -248,15 +271,26 @@ export function ApiDetailScreen({
     <div>
       {projectInactive && <InactiveBanner message="This Project is INACTIVE. This API is view-only until the Project is reactivated." />}
 
+      {onBackToBatch && (
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border bg-blue-50 px-6 py-2.5">
+          <span className="text-xs text-gray-700">You're configuring this API for a Batch Run. Make all the changes you need, then head back whenever you're ready.</span>
+          <Button variant="secondary" size="sm" onClick={() => guardedNavigate(onBackToBatch)}>
+            ← Back to Batch Run Preparation
+          </Button>
+        </div>
+      )}
+
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-6 py-4">
         <div>
-          <div className="text-xs text-muted">
-            <button onClick={onBack} className="cursor-pointer border-none bg-transparent p-0 text-xs text-gray-700 underline">
-              APIs
-            </button>
-            <span className="mx-1.5">/</span>
-            <span className="text-gray-900">{currentApi.apiName}</span>
-          </div>
+          {!onBackToBatch && (
+            <div className="text-xs text-muted">
+              <button onClick={onBack} className="cursor-pointer border-none bg-transparent p-0 text-xs text-gray-700 underline">
+                APIs
+              </button>
+              <span className="mx-1.5">/</span>
+              <span className="text-gray-900">{currentApi.apiName}</span>
+            </div>
+          )}
           <div className="mt-1.5 flex items-center gap-2">
             <HttpMethodBadge method={currentApi.httpMethod} />
             <span className="font-mono text-sm text-gray-900">{currentApi.path}</span>
@@ -283,20 +317,6 @@ export function ApiDetailScreen({
           )}
           {!projectInactive && (
             <>
-              {area === "run" ? (
-                <Button variant="secondary" onClick={() => guardedNavigate(() => setArea("configuration"))}>
-                  ← Configuration
-                </Button>
-              ) : (
-                <Button
-                  variant="primary"
-                  onClick={() => guardedNavigate(() => setArea("run"))}
-                  disabled={!canRun}
-                  title="Run execution is not part of this release — this opens Run API to prepare values manually."
-                >
-                  Run API
-                </Button>
-              )}
               <Button
                 variant="secondary"
                 onClick={() => {
@@ -322,6 +342,13 @@ export function ApiDetailScreen({
         </div>
       </div>
 
+      <TabBar
+        items={WORKSPACE_TABS}
+        activeKey={area}
+        onSelect={(key) => guardedNavigate(() => setArea(key as ApiWorkspaceArea))}
+        ariaLabel="API Detail sections"
+      />
+
       {area === "configuration" && (
         <ConfigurationArea
           currentApi={currentApi}
@@ -332,9 +359,13 @@ export function ApiDetailScreen({
           configsLoading={configsLoading}
           readOnlyConfig={readOnlyConfig}
           urlDraft={urlDraft}
-          onUrlDraftChange={(environmentId, value) => setUrlDraft((prev) => ({ ...prev, [environmentId]: value }))}
+          onUrlDraftChange={(environmentId, value) => {
+            setUrlDraft((prev) => ({ ...prev, [environmentId]: value }));
+            setUrlSaved(false);
+          }}
           savingUrl={savingUrl}
           urlError={urlError}
+          urlSaved={urlSaved}
           onSaveUrl={() => void handleSaveUrl()}
           requestInput={requestInput}
           projectInactive={projectInactive}
@@ -373,6 +404,19 @@ export function ApiDetailScreen({
           authTypeLabel={authTypeLabel}
           credentialStatus={credentialStatus}
           runBlockers={runBlockers}
+          runExecution={runExecution}
+        />
+      )}
+
+      {area === "history" && (
+        <RunHistoryArea
+          projectId={projectId}
+          apiId={apiId}
+          accessToken={accessToken}
+          onViewExecution={onViewExecution}
+          onViewAllRuns={onViewAllRuns}
+          onSessionExpired={onSessionExpired}
+          onAccessDenied={onAccessDenied}
         />
       )}
 

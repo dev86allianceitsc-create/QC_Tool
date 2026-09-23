@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { BrowserRouter, Navigate, Route, Routes, useNavigate, useOutletContext, useParams } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate, useOutletContext, useParams } from "react-router-dom";
 import { useAuth } from "./features/auth/useAuth";
 import { ERROR_MESSAGES, type LoginErrorType } from "./features/auth/auth.types";
 import { Header } from "./components/Header";
@@ -14,6 +14,10 @@ import { AuditLogScreen } from "./features/audit/AuditLogScreen";
 import { ApiDetailScreen } from "./features/apiEnvironment/ApiDetailScreen";
 import { ApiListScreen } from "./features/apiEnvironment/ApiListScreen";
 import { EnvironmentListScreen } from "./features/apiEnvironment/EnvironmentListScreen";
+import { BatchRunPreparationScreen, type BatchDraftSnapshot } from "./features/apiEnvironment/BatchRunPreparationScreen";
+import { RunResultScreen } from "./features/apiEnvironment/RunResultScreen";
+import { ExecutionDetailScreen } from "./features/apiEnvironment/ExecutionDetailScreen";
+import { ProjectTestRunsScreen } from "./features/apiEnvironment/ProjectTestRunsScreen";
 
 interface User {
   email: string;
@@ -148,6 +152,110 @@ function ApiListRoute() {
       onSessionExpired={ctx.onSessionExpired}
       onAccessDenied={ctx.onAccessDenied}
       onSelectApi={(apiId) => navigate(`/projects/${ctx.projectId}/apis/${apiId}`)}
+      onRunSelected={(apiIds, environmentId) =>
+        navigate(`/projects/${ctx.projectId}/batch/prepare`, { state: { apiIds, environmentId } })
+      }
+    />
+  );
+}
+
+function BatchRunPreparationRoute() {
+  const ctx = useOutletContext<ProjectLayoutContext>();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const state = location.state as { apiIds?: string[]; environmentId?: string; draft?: BatchDraftSnapshot } | null;
+  const apiIds = state?.apiIds;
+  const environmentId = state?.environmentId;
+
+  if (!apiIds || apiIds.length === 0 || !environmentId) {
+    return (
+      <div className="p-6">
+        <p className="m-0 mb-3 text-sm text-muted">
+          No APIs were selected for this Batch Run, or the selection was lost (for example, after a page refresh).
+        </p>
+        <button
+          onClick={() => navigate(`/projects/${ctx.projectId}/apis`)}
+          className="cursor-pointer border-none bg-transparent p-0 text-xs text-gray-700 underline"
+        >
+          Back to API List
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <BatchRunPreparationScreen
+      projectId={ctx.projectId}
+      projectStatus={ctx.projectStatus}
+      apiIds={apiIds}
+      environmentId={environmentId}
+      accessToken={ctx.accessToken}
+      initialDraft={state?.draft ?? null}
+      onBack={() => navigate(`/projects/${ctx.projectId}/apis`)}
+      onOpenConfiguration={(apiId, snapshot) =>
+        navigate(`/projects/${ctx.projectId}/apis/${apiId}`, {
+          state: {
+            returnTo: {
+              pathname: `/projects/${ctx.projectId}/batch/prepare`,
+              state: { apiIds: snapshot.apiIds, environmentId: snapshot.environmentId, draft: snapshot },
+            },
+          },
+        })
+      }
+      onSessionExpired={ctx.onSessionExpired}
+      onAccessDenied={ctx.onAccessDenied}
+      onExecuted={(runId) => navigate(`/projects/${ctx.projectId}/runs/${runId}`)}
+    />
+  );
+}
+
+function ProjectTestRunsRoute() {
+  const ctx = useOutletContext<ProjectLayoutContext>();
+  const navigate = useNavigate();
+  return (
+    <ProjectTestRunsScreen
+      projectId={ctx.projectId}
+      accessToken={ctx.accessToken}
+      onViewRun={(runId) => navigate(`/projects/${ctx.projectId}/runs/${runId}`)}
+      onSessionExpired={ctx.onSessionExpired}
+      onAccessDenied={ctx.onAccessDenied}
+    />
+  );
+}
+
+function RunResultRoute() {
+  const ctx = useOutletContext<ProjectLayoutContext>();
+  const { runId } = useParams<{ runId: string }>();
+  const navigate = useNavigate();
+  if (!runId) return <Navigate to={`/projects/${ctx.projectId}/apis`} replace />;
+  return (
+    <RunResultScreen
+      projectId={ctx.projectId}
+      runId={runId}
+      accessToken={ctx.accessToken}
+      onBack={() => navigate(`/projects/${ctx.projectId}/apis`)}
+      onViewAllRuns={() => navigate(`/projects/${ctx.projectId}/runs`)}
+      onViewExecution={(executionId) => navigate(`/projects/${ctx.projectId}/runs/${runId}/executions/${executionId}`)}
+      onSessionExpired={ctx.onSessionExpired}
+      onAccessDenied={ctx.onAccessDenied}
+    />
+  );
+}
+
+function ExecutionDetailRoute() {
+  const ctx = useOutletContext<ProjectLayoutContext>();
+  const { runId, executionId } = useParams<{ runId: string; executionId: string }>();
+  const navigate = useNavigate();
+  if (!runId || !executionId) return <Navigate to={`/projects/${ctx.projectId}/apis`} replace />;
+  return (
+    <ExecutionDetailScreen
+      projectId={ctx.projectId}
+      runId={runId}
+      executionId={executionId}
+      accessToken={ctx.accessToken}
+      onBack={() => navigate(`/projects/${ctx.projectId}/runs/${runId}`)}
+      onSessionExpired={ctx.onSessionExpired}
+      onAccessDenied={ctx.onAccessDenied}
     />
   );
 }
@@ -156,6 +264,8 @@ function ApiDetailRoute() {
   const ctx = useOutletContext<ProjectLayoutContext>();
   const { apiId } = useParams<{ apiId: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
+  const returnTo = (location.state as { returnTo?: { pathname: string; state: unknown } } | null)?.returnTo ?? null;
   if (!apiId) return <Navigate to={`/projects/${ctx.projectId}/apis`} replace />;
   return (
     <ApiDetailScreen
@@ -165,8 +275,11 @@ function ApiDetailRoute() {
       apiId={apiId}
       accessToken={ctx.accessToken}
       onBack={() => navigate(`/projects/${ctx.projectId}/apis`)}
+      onViewExecution={(runId, executionId) => navigate(`/projects/${ctx.projectId}/runs/${runId}/executions/${executionId}`)}
+      onViewAllRuns={() => navigate(`/projects/${ctx.projectId}/runs`)}
       onSessionExpired={ctx.onSessionExpired}
       onAccessDenied={ctx.onAccessDenied}
+      onBackToBatch={returnTo ? () => navigate(returnTo.pathname, { state: returnTo.state }) : undefined}
     />
   );
 }
@@ -318,6 +431,10 @@ function AuthenticatedRoutes({
           <Route index element={<ProjectOverviewRoute />} />
           <Route path="apis" element={<ApiListRoute />} />
           <Route path="apis/:apiId" element={<ApiDetailRoute />} />
+          <Route path="batch/prepare" element={<BatchRunPreparationRoute />} />
+          <Route path="runs" element={<ProjectTestRunsRoute />} />
+          <Route path="runs/:runId" element={<RunResultRoute />} />
+          <Route path="runs/:runId/executions/:executionId" element={<ExecutionDetailRoute />} />
           <Route path="environments" element={<EnvironmentListRoute />} />
           <Route path="members" element={<MembersRoute />} />
         </Route>

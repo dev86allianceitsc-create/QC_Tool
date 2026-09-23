@@ -27,6 +27,7 @@ export function BearerTokenCredentialFields({
   const [tokenDraft, setTokenDraft] = useState("");
   const [credentialError, setCredentialError] = useState<string | null>(null);
   const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
+  const [justSaved, setJustSaved] = useState<"saved" | "removed" | null>(null);
 
   async function handleSaveCredential() {
     const validationError = validateToken(tokenDraft);
@@ -38,6 +39,7 @@ export function BearerTokenCredentialFields({
     try {
       await onSaveCredential(tokenDraft);
       setTokenDraft("");
+      setJustSaved("saved");
     } catch (err) {
       setCredentialError(err instanceof ApiError ? err.message : "Unable to save Token.");
     }
@@ -48,6 +50,7 @@ export function BearerTokenCredentialFields({
     setCredentialError(null);
     try {
       await onRemoveCredential();
+      setJustSaved("removed");
     } catch (err) {
       setCredentialError(err instanceof ApiError ? err.message : "Unable to remove Token.");
     }
@@ -64,11 +67,16 @@ export function BearerTokenCredentialFields({
           <PasswordInput
             label={credentialStatus === "CONFIGURED" ? "New Token (replaces the current one)" : "Token"}
             value={tokenDraft}
-            onChange={(e) => setTokenDraft(e.target.value)}
+            onChange={(e) => {
+              setTokenDraft(e.target.value);
+              setJustSaved(null);
+            }}
             placeholder="Bearer eyJhbGciOi..."
             autoComplete="off"
           />
           {credentialError && <p className="m-0 text-sm text-error">{credentialError}</p>}
+          {!credentialError && justSaved === "saved" && <p className="m-0 text-sm text-success">Token saved.</p>}
+          {!credentialError && justSaved === "removed" && <p className="m-0 text-sm text-success">Token removed.</p>}
           <div className="flex gap-2.5">
             <Button variant="secondary" size="sm" onClick={() => void handleSaveCredential()} disabled={saving || !tokenDraft}>
               {saving ? "Saving..." : credentialStatus === "CONFIGURED" ? "Replace" : "Configure"}

@@ -10,6 +10,7 @@ import { ProjectsModule } from "./modules/projects/projects.module";
 import { AuditModule } from "./modules/audit/audit.module";
 import { ApiEnvironmentModule } from "./modules/api-environment/api-environment.module";
 import { AuthenticationModule } from "./modules/authentication/authentication.module";
+import { RunModule } from "./modules/run/run.module";
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { AuthenticationModule } from "./modules/authentication/authentication.mo
     ProjectsModule,
     ApiEnvironmentModule,
     AuthenticationModule,
+    RunModule,
   ],
   controllers: [AppController],
   providers: [AppService],

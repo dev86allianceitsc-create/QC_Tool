@@ -56,6 +56,7 @@ export function AuthenticationTab({
   const [loginFormDraft, setLoginFormDraft] = useState(toLoginFormDraft(config));
   const [fieldError, setFieldError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [justSaved, setJustSaved] = useState(false);
   const [pendingPayload, setPendingPayload] = useState<PutAuthenticationConfigurationPayload | null>(null);
 
   const dirty = authTypeDraft !== config.authType || (authTypeDraft === "LOGIN_FORM" && isLoginFormDraftDirty(loginFormDraft, config));
@@ -75,6 +76,7 @@ export function AuthenticationTab({
     setLoginFormDraft(toLoginFormDraft(config));
     setFieldError(null);
     setSaveError(null);
+    setJustSaved(false);
   }
 
   async function commitSave(payload: PutAuthenticationConfigurationPayload) {
@@ -87,6 +89,7 @@ export function AuthenticationTab({
       // that succeeded.
       setAuthTypeDraft(saved.authType);
       setLoginFormDraft(toLoginFormDraft(saved));
+      setJustSaved(true);
     } catch (err) {
       // CL-3C-02: a failed save leaves the stored type and credential
       // untouched, so the draft stays as it was for the Admin to retry or
@@ -154,6 +157,7 @@ export function AuthenticationTab({
             <div className="mt-4 flex flex-col gap-2.5">
               {fieldError && <p className="m-0 text-sm text-error">{fieldError}</p>}
               {saveError && <p className="m-0 text-sm text-error">{saveError}</p>}
+              {!fieldError && !saveError && !dirty && justSaved && <p className="m-0 text-sm text-success">Saved.</p>}
               <div className="flex gap-2.5">
                 <Button variant="secondary" onClick={handleCancel} disabled={!dirty}>
                   Cancel changes

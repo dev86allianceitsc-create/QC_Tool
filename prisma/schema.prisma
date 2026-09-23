@@ -37,10 +37,29 @@
 // no backend persistence in this scope — Run persistence is deferred, so
 // Version stays a transient UI-only field (Run Preparation), not modeled here.
 //
+// Group Run — Run Execution implementation.
+// Source of truth: document/requirement/04_Run (REQ-RUN-001..009, FINAL) and
+// document/database/AnD_Database_Group_Run Section 17 corrected schema
+// (DB-C01..C10 — treated as authoritative over the earlier uncorrected
+// section) and Database_Standard_v2.0.docx. Adds `runs` (one row per
+// accepted Single/Batch Execute) and `run_executions` (one row per API
+// actually dispatched — Status, Outcome, API/DB Version frozen at
+// acceptance, redacted Request/Response trace). Batch max-API-count is
+// enforced at application layer, not a DB CHECK (DB-C01). Secret credential
+// values are never written to run_executions — only the redacted/masked
+// request trace is persisted (REQ-RUN-008 RS-008-15), reusing the existing
+// AES-256-GCM credential decryption at dispatch time only, in memory.
+// skip_reason_code's MISSING_REQUIRED_INPUT value is a Design Proposal: the
+// business reason-code contract for the "Batch required-input skip"
+// UX-agreed flow is not finalized (DC-01, UI_Requirement_Mapping_Group_Run
+// Section 6) and may be renamed/extended by a future controlled migration.
+// Snapshot/Comparison (SAME/DIFFERENT, Baseline/Target, field diff) remain
+// explicitly out of scope — Run only stores Input and Output.
+//
 // Scope: users, user_sessions, projects, project_memberships, audit_logs,
 // api_configurations, environments, api_environment_configs,
 // request_parameter_definitions, request_body_definitions,
-// authentication_configurations.
+// authentication_configurations, runs, run_executions.
 
 datasource db {
   provider = "postgresql"
@@ -74,6 +93,7 @@ model User {
   sessions    UserSession[]
   memberships ProjectMembership[]
   auditLogs   AuditLog[]
+  runs        Run[]
 
   @@map("users")
 }
@@ -126,10 +146,11 @@ model Project {
   deletedAt DateTime? @map("deleted_at") @db.Timestamptz
   note      String?   @db.Text
 
-  memberships ProjectMembership[]
-  auditLogs   AuditLog[]
+  memberships  ProjectMembership[]
+  auditLogs    AuditLog[]
   apis         ApiConfiguration[]
   environments Environment[]
+  runs         Run[]
 
   @@index([projectStatus, deletedAt], map: "idx_projects_status_deleted")
   @@map("projects")
@@ -216,9 +237,9 @@ model ApiConfiguration {
   projectId String  @map("project_id") @db.Uuid
   project   Project @relation(fields: [projectId], references: [projectId], onDelete: Restrict)
 
-  apiName    String  @map("api_name") @db.VarChar(255)
-  httpMethod String  @map("http_method") @db.VarChar(10)
-  path       String  @db.VarChar(2048)
+  apiName     String  @map("api_name") @db.VarChar(255)
+  httpMethod  String  @map("http_method") @db.VarChar(10)
+  path        String  @db.VarChar(2048)
   description String? @db.Text
 
   // creation_source domain: MANUAL | OPENAPI_IMPORT (REQ-FUN-002). Enforced
@@ -237,6 +258,7 @@ model ApiConfiguration {
   parameterDefinitions RequestParameterDefinition[]
   bodyDefinition       RequestBodyDefinition?
   authConfigs          AuthenticationConfiguration[]
+  runExecutions        RunExecution[]
 
   @@index([projectId, deletedAt], map: "idx_api_configurations_project_deleted")
   @@map("api_configurations")
@@ -277,6 +299,7 @@ model Environment {
 
   configs     ApiEnvironmentConfig[]
   authConfigs AuthenticationConfiguration[]
+  runs        Run[]
 
   @@index([projectId], map: "idx_environments_project_id")
   @@map("environments")
@@ -421,4 +444,146 @@ model AuthenticationConfiguration {
   @@id([apiId, environmentId], map: "pk_authentication_configurations")
   @@index([environmentId], map: "idx_authentication_configurations_environment_id")
   @@map("authentication_configurations")
+}
+
+// runs — Group Run, document/database/AnD_Database_Group_Run Section 17
+// (DB-C01..C10 corrected). One row per accepted Single or Batch Execute
+// (REQ-RUN-001). Single = exactly 1 RunExecution; Batch = up to the
+// application-enforced max (DB-C01 — not a DB CHECK). Immutable history:
+// no application Update/Delete once created, no soft delete.
+model Run {
+  runId String @id @default(uuid()) @map("run_id") @db.Uuid
+
+  projectId String  @map("project_id") @db.Uuid
+  project   Project @relation(fields: [projectId], references: [projectId], onDelete: Restrict)
+
+  environmentId String      @map("environment_id") @db.Uuid
+  environment   Environment @relation(fields: [environmentId], references: [environmentId], onDelete: Restrict)
+
+  createdBy String @map("created_by") @db.Uuid
+  creator   User   @relation(fields: [createdBy], references: [userId], onDelete: Restrict)
+
+  // run_type domain: SINGLE | BATCH. Enforced via raw CHECK
+  // ck_runs_run_type, not modeled here.
+  runType String @map("run_type") @db.VarChar(20)
+
+  // run_status domain: PENDING | RUNNING | COMPLETED | INTERRUPTED
+  // (Run/Batch-level rollup — SKIPPED/NOT_EXECUTED exist only at the
+  // RunExecution level, REQ-RUN-007). Enforced via raw CHECK
+  // ck_runs_run_status. NOT NULL, no SQL default — set explicitly by
+  // application code at acceptance (PENDING), same convention as
+  // projects.project_status / users.account_status.
+  runStatus String @map("run_status") @db.VarChar(20)
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+  startedAt DateTime? @map("started_at") @db.Timestamptz
+  endedAt   DateTime? @map("ended_at") @db.Timestamptz
+  note      String?   @db.Text
+
+  executions RunExecution[]
+
+  @@index([projectId, createdAt(sort: Desc)], map: "idx_runs_project_id_created_at")
+  @@map("runs")
+}
+
+// run_executions — Group Run, document/database/AnD_Database_Group_Run
+// Section 17 (DB-C01..C10 corrected). One row per API actually dispatched
+// within a Run (Single or Batch child). Status and Outcome are
+// intentionally separate columns (REQ-RUN-007/008 BR-02): Status tracks
+// lifecycle (PENDING/RUNNING/COMPLETED/SKIPPED/INTERRUPTED/NOT_EXECUTED),
+// Outcome tracks result classification (RESPONSE_RECEIVED/RUN_ERROR/
+// SKIPPED). Request/Response trace columns are populated only once actually
+// dispatched, already redacted/masked (REQ-RUN-008 RS-008-15) — never the
+// real secret credential value. Immutable history once written.
+model RunExecution {
+  runExecutionId String @id @default(uuid()) @map("run_execution_id") @db.Uuid
+
+  runId String @map("run_id") @db.Uuid
+  run   Run    @relation(fields: [runId], references: [runId], onDelete: Restrict)
+
+  apiId String           @map("api_id") @db.Uuid
+  api   ApiConfiguration @relation(fields: [apiId], references: [apiId], onDelete: Restrict)
+
+  // 1-based position within the Run's selection order (Single is always 1).
+  // Enforced >= 1 via raw CHECK ck_run_executions_execution_order.
+  executionOrder Int @map("execution_order")
+
+  // execution_status domain: PENDING | RUNNING | COMPLETED | SKIPPED |
+  // INTERRUPTED | NOT_EXECUTED. Enforced via raw CHECK
+  // ck_run_executions_execution_status, not modeled here.
+  executionStatus String @map("execution_status") @db.VarChar(20)
+
+  // execution_outcome domain: RESPONSE_RECEIVED | RUN_ERROR | SKIPPED.
+  // Nullable — no outcome yet while PENDING/RUNNING, and INTERRUPTED/
+  // NOT_EXECUTED never receive one (REQ-RUN-007/008 BR-02). Enforced via raw
+  // CHECK ck_run_executions_execution_outcome.
+  executionOutcome String? @map("execution_outcome") @db.VarChar(20)
+
+  // skip_reason_code: CONFIRMED value is MISSING_FULL_URL (REQ-RUN-001
+  // RS-001-08 — Batch-only; missing Full URL never blocks Batch acceptance,
+  // the API is SKIPPED instead, no request sent). MISSING_REQUIRED_INPUT is
+  // a Design Proposal for the UX-agreed "review & confirm skip" flow (DC-01,
+  // UI_Requirement_Mapping_Group_Run Section 6) — not finalized, may be
+  // renamed/extended by a future controlled migration. Enforced via raw
+  // CHECK ck_run_executions_skip_reason_code.
+  skipReasonCode String? @map("skip_reason_code") @db.VarChar(50)
+
+  // error_reason_code: set only when execution_outcome = RUN_ERROR.
+  // HTTP_ERROR covers HTTP 4xx/5xx (REQ-RUN-002, http_status populated); the
+  // other 5 values cover transport failures with no HTTP response
+  // (REQ-RUN-003, http_status null). Enforced via raw CHECK
+  // ck_run_executions_error_reason_code.
+  errorReasonCode  String? @map("error_reason_code") @db.VarChar(50)
+  errorMessageSafe String? @map("error_message_safe") @db.Text
+
+  // API/Database Version (REQ-RUN-009). NOT NULL, no SQL default — app
+  // resolves manual > configured-if-supported > UNKNOWN and freezes the
+  // value at Execute acceptance; never rewritten for an existing Run.
+  apiVersion      String @map("api_version") @db.VarChar(100)
+  databaseVersion String @map("database_version") @db.VarChar(100)
+
+  // Actual Request trace (REQ-RUN-008 RS-008-05), already redacted/masked
+  // before persistence (RS-008-15). Null until the request is actually
+  // dispatched — never populated for SKIPPED/NOT_EXECUTED (RS-008-09).
+  requestMethod      String?   @map("request_method") @db.VarChar(10)
+  requestUrlSafe     String?   @map("request_url_safe") @db.VarChar(4096)
+  requestQuerySafe   Json?     @map("request_query_safe") @db.JsonB
+  requestHeadersSafe Json?     @map("request_headers_safe") @db.JsonB
+  requestBodySafe    String?   @map("request_body_safe") @db.Text
+  requestContentType String?   @map("request_content_type") @db.VarChar(255)
+  requestSentAt      DateTime? @map("request_sent_at") @db.Timestamptz
+
+  // Actual HTTP Response trace (REQ-RUN-008 RS-008-06). http_status is null
+  // when no response was ever received (transport failure, REQ-RUN-003).
+  httpStatus          Int?    @map("http_status")
+  responseHeadersSafe Json?   @map("response_headers_safe") @db.JsonB
+  responseBodySafe    String? @map("response_body_safe") @db.Text
+  responseContentType String? @map("response_content_type") @db.VarChar(255)
+
+  // response_body_kind domain: TEXT | BINARY (REQ-RUN-008 BR-11: JSON and
+  // other text are both stored as TEXT; binary/file responses persist
+  // metadata only, never the body — RS-008-18). Enforced via raw CHECK
+  // ck_run_executions_response_body_kind.
+  responseBodyKind String? @map("response_body_kind") @db.VarChar(20)
+
+  // NOT NULL — the app always states explicitly whether the stored body was
+  // cut, never left to a DB default (same "no silent default" convention as
+  // environments.allow_run).
+  responseBodyIsTruncated Boolean   @map("response_body_is_truncated")
+  responseBodySizeBytes   Int?      @map("response_body_size_bytes")
+  responseBodyStoredBytes Int?      @map("response_body_stored_bytes")
+  responseReceivedAt      DateTime? @map("response_received_at") @db.Timestamptz
+
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt  DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+  startedAt  DateTime? @map("started_at") @db.Timestamptz
+  endedAt    DateTime? @map("ended_at") @db.Timestamptz
+  durationMs Int?      @map("duration_ms")
+  note       String?   @db.Text
+
+  @@unique([runId, apiId], map: "uq_run_executions_run_id_api_id")
+  @@unique([runId, executionOrder], map: "uq_run_executions_run_id_execution_order")
+  @@index([apiId, createdAt(sort: Desc)], map: "idx_run_executions_api_id_created_at")
+  @@map("run_executions")
 }

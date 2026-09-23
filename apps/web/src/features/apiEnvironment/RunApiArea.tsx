@@ -6,6 +6,7 @@ import { RunExecutionTargetPanel } from "./RunExecutionTargetPanel";
 import { RunRequestPreviewPanel } from "./RunRequestPreviewPanel";
 import { RunRequestValuesPanel } from "./RunRequestValuesPanel";
 import { RunVersionMetadataPanel } from "./RunVersionMetadataPanel";
+import type { UseSingleRunExecutionResult } from "./useSingleRunExecution";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { StepSidebar, type StepReadiness, type StepSidebarItem } from "../../components/ui/StepSidebar";
@@ -32,6 +33,7 @@ export function RunApiArea({
   authTypeLabel,
   credentialStatus,
   runBlockers,
+  runExecution,
 }: {
   httpMethod: string;
   environments: EnvironmentListItem[];
@@ -44,6 +46,7 @@ export function RunApiArea({
   authTypeLabel: string | null;
   credentialStatus: ApiEnvironmentConfigListItem["credentialStatus"] | null;
   runBlockers: string[];
+  runExecution: UseSingleRunExecutionResult;
 }) {
   const [step, setStep] = useState<RunApiStep>("executionTarget");
   const [values, setValues] = useState<RunRequestValues>({ pathValues: {}, queryValues: {}, headerValues: {}, bodyValue: "" });
@@ -55,7 +58,7 @@ export function RunApiArea({
     { key: "requestValues", label: "Request Values", description: "Manual Path, Query, Header and Body values for this Run." },
     { key: "versionMetadata", label: "Version Metadata", description: "Optional API Version and Database Version for this Run." },
     { key: "requestPreview", label: "Request Preview", description: "Method, resolved URL, safe headers/body, and masked auth." },
-    { key: "execute", label: "Execute", description: "Run execution — not available yet.", readiness: "not_available" },
+    { key: "execute", label: "Execute", description: "Send this Run and view the actual result." },
   ];
 
   const currentIndex = RUN_STEP_ORDER.indexOf(step);
@@ -102,7 +105,17 @@ export function RunApiArea({
           />
         )}
 
-        {step === "execute" && <RunExecutePanel runBlockers={runBlockers} />}
+        {step === "execute" && (
+          <RunExecutePanel
+            httpMethod={httpMethod}
+            fullUrl={config?.fullUrl ?? null}
+            values={values}
+            apiVersion={apiVersion}
+            dbVersion={dbVersion}
+            runBlockers={runBlockers}
+            runExecution={runExecution}
+          />
+        )}
 
         <div className="mt-6 flex justify-between border-t border-border pt-4">
           <Button variant="secondary" onClick={() => setStep(RUN_STEP_ORDER[currentIndex - 1])} disabled={currentIndex <= 0}>
