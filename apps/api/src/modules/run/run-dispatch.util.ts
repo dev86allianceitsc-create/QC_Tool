@@ -64,6 +64,43 @@ function maskAuthorizationValue(value: string): string {
   return match ? `${match[1]} [REDACTED]` : "[REDACTED]";
 }
 
+export interface HeaderPair {
+  key: string;
+  value: string;
+}
+
+// Snapshot's own request-header capture (REQ-SNP-003 §C: "Giá trị thực tế
+// nếu có" — actual value). Reads the real dispatch-time header set directly
+// — never Run Result's already-folded/masked requestHeadersSafe — so a
+// future change to Run Result's trace can never silently change what
+// Snapshot stores. Deliberately UNMASKED, per explicit product decision:
+// Snapshot must persist the exact Authorization value sent on the wire,
+// diverging from redactHeaders/requestHeadersSafe above (Run Result keeps
+// masking Authorization; Snapshot does not). Order matches the Record's own
+// key insertion order; this can never carry a duplicate header name because
+// create-run.dto.ts's headerValues field is already a Record<string, string>
+// long before this point — that ceiling on fidelity is inherent to the
+// input shape, not introduced here.
+export function toSnapshotRequestHeaderPairs(headers: Record<string, string>): HeaderPair[] {
+  return Object.entries(headers).map(([key, value]) => ({ key, value }));
+}
+
+// Snapshot's own response-header capture (REQ-SNP-003 §D). No masking, same
+// as the request-header capture above — a response never carries an
+// outgoing Authorization value anyway, matching Run Result's own unredacted
+// responseHeadersSafe.
+// DISCLOSED LIMITATION: undici's Headers implementation already sorts
+// header names and combines every repeated name other than Set-Cookie into
+// one comma-joined value before entries() is observable at the JS level
+// (WHATWG Fetch "sort and combine" step) — this function reports that
+// already-collapsed view, not the literal wire order/duplicates. Recovering
+// the true wire representation would require dispatching with Node's
+// http/https client (response.rawHeaders) instead of fetch(), which is out
+// of scope here — this is a reported gap, not a claimed fix.
+export function toSnapshotResponseHeaderPairs(headers: Headers): HeaderPair[] {
+  return [...headers.entries()].map(([key, value]) => ({ key, value }));
+}
+
 export interface ReadResponseBodyResult {
   bodyKind: "TEXT" | "BINARY";
   bodyText: string | null;
@@ -71,35 +108,79 @@ export interface ReadResponseBodyResult {
   sizeBytes: number | null;
   storedBytes: number | null;
   contentType: string | null;
+  // Full-fidelity copy of the same read, for Snapshot (REQ-SNP-004): the
+  // complete buffer (text or binary) when the body is within
+  // snapshotCapBytes, otherwise null with snapshotBodyOversized set — no
+  // silent truncation for a Snapshot payload (EXC-01).
+  snapshotBody: Buffer | null;
+  snapshotBodyOversized: boolean;
 }
 
 const TEXT_LIKE_CONTENT_TYPE = /^(text\/|application\/(json|xml|javascript|x-www-form-urlencoded)|.*\+json|.*\+xml)/i;
 
-// Binary/file responses persist metadata only, never the body (REQ-RUN-008
-// RS-008-18) — the body stream is cancelled unread so the connection is
-// released promptly instead of being buffered for nothing.
-export async function readResponseBody(response: Response): Promise<ReadResponseBodyResult> {
+async function bufferResponseBody(response: Response, ceilingBytes: number): Promise<{ buffer: Buffer; exceededCeiling: boolean }> {
+  const stream = response.body;
+  if (!stream) {
+    return { buffer: Buffer.alloc(0), exceededCeiling: false };
+  }
+  const reader = stream.getReader();
+  const chunks: Buffer[] = [];
+  let total = 0;
+  let exceededCeiling = false;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      if (!value || value.byteLength === 0) {
+        continue;
+      }
+      chunks.push(Buffer.from(value));
+      total += value.byteLength;
+      if (total >= ceilingBytes) {
+        exceededCeiling = true;
+        await reader.cancel().catch(() => undefined);
+        break;
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return { buffer: Buffer.concat(chunks), exceededCeiling };
+}
+
+// Reads the full response body once via a chunked loop capped at
+// snapshotCapBytes + 1 (so an oversized body is detected without buffering
+// it unboundedly), then derives two views from that single buffer: the
+// existing RunExecution trace (text truncated to
+// MAX_STORED_RESPONSE_BODY_BYTES, binary metadata-only — REQ-RUN-008
+// RS-008-18, unchanged) and a full-fidelity copy for Snapshot (REQ-SNP-001/
+// 004, Q1 decision — capture full text+binary bodies instead of inheriting
+// RUN-008's 1MB truncation).
+export async function readResponseBody(response: Response, snapshotCapBytes: number): Promise<ReadResponseBodyResult> {
   const contentType = response.headers.get("content-type");
   const isTextLike = !contentType || TEXT_LIKE_CONTENT_TYPE.test(contentType);
 
+  const { buffer, exceededCeiling } = await bufferResponseBody(response, snapshotCapBytes + 1);
+  const totalBytes = exceededCeiling ? null : buffer.byteLength;
+  const snapshotBody = exceededCeiling ? null : buffer;
+
   if (!isTextLike) {
-    await response.body?.cancel().catch(() => undefined);
-    const lengthHeader = response.headers.get("content-length");
     return {
       bodyKind: "BINARY",
       bodyText: null,
       isTruncated: false,
-      sizeBytes: lengthHeader ? Number(lengthHeader) : null,
+      sizeBytes: totalBytes,
       storedBytes: null,
       contentType,
+      snapshotBody,
+      snapshotBodyOversized: exceededCeiling,
     };
   }
 
-  const buffer = await response.arrayBuffer();
-  const bytes = Buffer.from(buffer);
-  const totalBytes = bytes.byteLength;
-  const isTruncated = totalBytes > MAX_STORED_RESPONSE_BODY_BYTES;
-  const storedBuffer = isTruncated ? bytes.subarray(0, MAX_STORED_RESPONSE_BODY_BYTES) : bytes;
+  const isTruncated = exceededCeiling || buffer.byteLength > MAX_STORED_RESPONSE_BODY_BYTES;
+  const storedBuffer = buffer.subarray(0, MAX_STORED_RESPONSE_BODY_BYTES);
   const storedText = storedBuffer.toString("utf-8");
 
   return {
@@ -109,6 +190,8 @@ export async function readResponseBody(response: Response): Promise<ReadResponse
     sizeBytes: totalBytes,
     storedBytes: Buffer.byteLength(storedText, "utf-8"),
     contentType,
+    snapshotBody,
+    snapshotBodyOversized: exceededCeiling,
   };
 }
 

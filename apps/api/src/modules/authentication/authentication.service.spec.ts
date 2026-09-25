@@ -195,6 +195,162 @@ describe("AuthenticationService", () => {
         prisma,
       );
     });
+
+    // context_version (Group 5 Q5 answer): identity/access-change increments.
+    it("starts a brand-new row at contextVersion 1", async () => {
+      const { service, prisma } = makeService();
+      prisma.authenticationConfiguration.findUnique.mockResolvedValue(null);
+      prisma.authenticationConfiguration.upsert.mockResolvedValue({
+        authType: "NONE",
+        loginUrl: null,
+        username: null,
+        usernameField: null,
+        passwordField: null,
+        tokenResponsePath: null,
+        updatedAt: new Date(),
+        passwordCiphertext: null,
+        bearerTokenCiphertext: null,
+      });
+
+      await service.putConfiguration("p-1", "a-1", "e-1", { authType: "NONE" } as never, "user-1");
+
+      const upsertArgs = prisma.authenticationConfiguration.upsert.mock.calls[0][0];
+      expect(upsertArgs.create.contextVersion).toBe(1);
+    });
+
+    it("increments contextVersion when authType changes on an existing row", async () => {
+      const { service, prisma } = makeService();
+      prisma.authenticationConfiguration.findUnique.mockResolvedValue({
+        authType: "BEARER_TOKEN",
+        username: null,
+        contextVersion: 3,
+        passwordCiphertext: null,
+        bearerTokenCiphertext: Buffer.from("ct"),
+      });
+      prisma.authenticationConfiguration.upsert.mockResolvedValue({
+        authType: "NONE",
+        loginUrl: null,
+        username: null,
+        usernameField: null,
+        passwordField: null,
+        tokenResponsePath: null,
+        updatedAt: new Date(),
+        passwordCiphertext: null,
+        bearerTokenCiphertext: null,
+      });
+
+      await service.putConfiguration("p-1", "a-1", "e-1", { authType: "NONE" } as never, "user-1");
+
+      const upsertArgs = prisma.authenticationConfiguration.upsert.mock.calls[0][0];
+      expect(upsertArgs.create.contextVersion).toBe(4);
+    });
+
+    it("increments contextVersion when the LOGIN_FORM username changes but authType stays LOGIN_FORM", async () => {
+      const { service, prisma } = makeService();
+      prisma.authenticationConfiguration.findUnique.mockResolvedValue({
+        authType: "LOGIN_FORM",
+        username: "old-user",
+        contextVersion: 2,
+        passwordCiphertext: null,
+        bearerTokenCiphertext: null,
+      });
+      prisma.authenticationConfiguration.upsert.mockResolvedValue({
+        authType: "LOGIN_FORM",
+        loginUrl: "https://target.example.com/login",
+        username: "new-user",
+        usernameField: "user",
+        passwordField: "pass",
+        tokenResponsePath: "access_token",
+        updatedAt: new Date(),
+        passwordCiphertext: null,
+        bearerTokenCiphertext: null,
+      });
+
+      await service.putConfiguration(
+        "p-1",
+        "a-1",
+        "e-1",
+        {
+          authType: "LOGIN_FORM",
+          loginUrl: "https://target.example.com/login",
+          username: "new-user",
+          usernameField: "user",
+          passwordField: "pass",
+          tokenResponsePath: "access_token",
+        } as never,
+        "user-1",
+      );
+
+      const upsertArgs = prisma.authenticationConfiguration.upsert.mock.calls[0][0];
+      expect(upsertArgs.create.contextVersion).toBe(3);
+    });
+
+    it("does not increment contextVersion for a LOGIN_FORM technical-field-only edit (username unchanged)", async () => {
+      const { service, prisma } = makeService();
+      prisma.authenticationConfiguration.findUnique.mockResolvedValue({
+        authType: "LOGIN_FORM",
+        username: "svc-account",
+        contextVersion: 5,
+        passwordCiphertext: null,
+        bearerTokenCiphertext: null,
+      });
+      prisma.authenticationConfiguration.upsert.mockResolvedValue({
+        authType: "LOGIN_FORM",
+        loginUrl: "https://target.example.com/login-v2",
+        username: "svc-account",
+        usernameField: "user",
+        passwordField: "pass",
+        tokenResponsePath: "access_token",
+        updatedAt: new Date(),
+        passwordCiphertext: null,
+        bearerTokenCiphertext: null,
+      });
+
+      await service.putConfiguration(
+        "p-1",
+        "a-1",
+        "e-1",
+        {
+          authType: "LOGIN_FORM",
+          loginUrl: "https://target.example.com/login-v2",
+          username: "svc-account",
+          usernameField: "user",
+          passwordField: "pass",
+          tokenResponsePath: "access_token",
+        } as never,
+        "user-1",
+      );
+
+      const upsertArgs = prisma.authenticationConfiguration.upsert.mock.calls[0][0];
+      expect(upsertArgs.create.contextVersion).toBe(5);
+    });
+
+    it("does not increment contextVersion when authType stays the same non-LOGIN_FORM value", async () => {
+      const { service, prisma } = makeService();
+      prisma.authenticationConfiguration.findUnique.mockResolvedValue({
+        authType: "BEARER_TOKEN",
+        username: null,
+        contextVersion: 2,
+        passwordCiphertext: null,
+        bearerTokenCiphertext: Buffer.from("ct"),
+      });
+      prisma.authenticationConfiguration.upsert.mockResolvedValue({
+        authType: "BEARER_TOKEN",
+        loginUrl: null,
+        username: null,
+        usernameField: null,
+        passwordField: null,
+        tokenResponsePath: null,
+        updatedAt: new Date(),
+        passwordCiphertext: null,
+        bearerTokenCiphertext: Buffer.from("ct"),
+      });
+
+      await service.putConfiguration("p-1", "a-1", "e-1", { authType: "BEARER_TOKEN" } as never, "user-1");
+
+      const upsertArgs = prisma.authenticationConfiguration.upsert.mock.calls[0][0];
+      expect(upsertArgs.create.contextVersion).toBe(2);
+    });
   });
 
   describe("putCredential", () => {
@@ -271,6 +427,111 @@ describe("AuthenticationService", () => {
 
       expect(prisma.authenticationConfiguration.update).toHaveBeenCalled();
     });
+
+    // context_version (Group 5 Q5 answer): rotate-vs-identity-change rules.
+    it("does not increment contextVersion for a LOGIN_FORM password-only replacement", async () => {
+      const { service, prisma } = makeService();
+      prisma.authenticationConfiguration.findUnique.mockResolvedValue({
+        authType: "LOGIN_FORM",
+        contextVersion: 4,
+        passwordCiphertext: Buffer.from("old"),
+        bearerTokenCiphertext: null,
+      });
+      prisma.authenticationConfiguration.update.mockResolvedValue({
+        authType: "LOGIN_FORM",
+        loginUrl: null,
+        username: null,
+        usernameField: null,
+        passwordField: null,
+        tokenResponsePath: null,
+        updatedAt: new Date(),
+        passwordCiphertext: Buffer.from("new"),
+        bearerTokenCiphertext: null,
+      });
+
+      await service.putCredential("p-1", "a-1", "e-1", { password: "new-secret" } as never, "user-1");
+
+      const data = prisma.authenticationConfiguration.update.mock.calls[0][0].data;
+      expect(data).not.toHaveProperty("contextVersion");
+    });
+
+    it("increments contextVersion by default when a BEARER_TOKEN is replaced", async () => {
+      const { service, prisma } = makeService();
+      prisma.authenticationConfiguration.findUnique.mockResolvedValue({
+        authType: "BEARER_TOKEN",
+        contextVersion: 2,
+        passwordCiphertext: null,
+        bearerTokenCiphertext: Buffer.from("old"),
+      });
+      prisma.authenticationConfiguration.update.mockResolvedValue({
+        authType: "BEARER_TOKEN",
+        loginUrl: null,
+        username: null,
+        usernameField: null,
+        passwordField: null,
+        tokenResponsePath: null,
+        updatedAt: new Date(),
+        passwordCiphertext: null,
+        bearerTokenCiphertext: Buffer.from("new"),
+      });
+
+      await service.putCredential("p-1", "a-1", "e-1", { token: "new-token" } as never, "user-1");
+
+      const data = prisma.authenticationConfiguration.update.mock.calls[0][0].data;
+      expect(data.contextVersion).toEqual({ increment: 1 });
+    });
+
+    it("does not increment contextVersion when sameIdentity is true for a BEARER_TOKEN replacement", async () => {
+      const { service, prisma } = makeService();
+      prisma.authenticationConfiguration.findUnique.mockResolvedValue({
+        authType: "BEARER_TOKEN",
+        contextVersion: 2,
+        passwordCiphertext: null,
+        bearerTokenCiphertext: Buffer.from("old"),
+      });
+      prisma.authenticationConfiguration.update.mockResolvedValue({
+        authType: "BEARER_TOKEN",
+        loginUrl: null,
+        username: null,
+        usernameField: null,
+        passwordField: null,
+        tokenResponsePath: null,
+        updatedAt: new Date(),
+        passwordCiphertext: null,
+        bearerTokenCiphertext: Buffer.from("new"),
+      });
+
+      await service.putCredential("p-1", "a-1", "e-1", { token: "new-token", sameIdentity: true } as never, "user-1");
+
+      const data = prisma.authenticationConfiguration.update.mock.calls[0][0].data;
+      expect(data).not.toHaveProperty("contextVersion");
+    });
+
+    it("does not increment contextVersion on the very first credential ever set on a row (BEARER_TOKEN)", async () => {
+      const { service, prisma } = makeService();
+      prisma.authenticationConfiguration.findUnique.mockResolvedValue({
+        authType: "BEARER_TOKEN",
+        contextVersion: 1,
+        passwordCiphertext: null,
+        bearerTokenCiphertext: null,
+      });
+      prisma.authenticationConfiguration.update.mockResolvedValue({
+        authType: "BEARER_TOKEN",
+        loginUrl: null,
+        username: null,
+        usernameField: null,
+        passwordField: null,
+        tokenResponsePath: null,
+        updatedAt: new Date(),
+        passwordCiphertext: null,
+        bearerTokenCiphertext: Buffer.from("first"),
+      });
+
+      await service.putCredential("p-1", "a-1", "e-1", { token: "first-token" } as never, "user-1");
+
+      const data = prisma.authenticationConfiguration.update.mock.calls[0][0].data;
+      expect(data).not.toHaveProperty("contextVersion");
+    });
   });
 
   describe("removeCredential", () => {
@@ -304,6 +565,33 @@ describe("AuthenticationService", () => {
 
       expect(result).toMatchObject({ authType: "LOGIN_FORM", credentialStatus: "NOT_CONFIGURED" });
       expect(auditWriter.record).toHaveBeenCalledWith(expect.objectContaining({ eventType: "CREDENTIAL_REMOVED" }), prisma);
+    });
+
+    // context_version (Group 5 Q5 answer): removal is an access change.
+    it("increments contextVersion when actually removing a configured credential", async () => {
+      const { service, prisma } = makeService();
+      prisma.authenticationConfiguration.findUnique.mockResolvedValue({
+        authType: "LOGIN_FORM",
+        contextVersion: 3,
+        passwordCiphertext: Buffer.from("ct"),
+        bearerTokenCiphertext: null,
+      });
+      prisma.authenticationConfiguration.update.mockResolvedValue({
+        authType: "LOGIN_FORM",
+        loginUrl: null,
+        username: null,
+        usernameField: null,
+        passwordField: null,
+        tokenResponsePath: null,
+        updatedAt: new Date(),
+        passwordCiphertext: null,
+        bearerTokenCiphertext: null,
+      });
+
+      await service.removeCredential("p-1", "a-1", "e-1", "user-1");
+
+      const data = prisma.authenticationConfiguration.update.mock.calls[0][0].data;
+      expect(data.contextVersion).toEqual({ increment: 1 });
     });
   });
 

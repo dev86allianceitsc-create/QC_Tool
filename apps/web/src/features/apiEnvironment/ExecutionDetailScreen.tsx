@@ -14,6 +14,7 @@ export function ExecutionDetailScreen({
   executionId,
   accessToken,
   onBack,
+  onViewSnapshot,
   onSessionExpired,
   onAccessDenied,
 }: {
@@ -22,6 +23,7 @@ export function ExecutionDetailScreen({
   executionId: string;
   accessToken: string | null;
   onBack: () => void;
+  onViewSnapshot?: (snapshotId: string) => void;
   onSessionExpired: () => void;
   onAccessDenied: () => void;
 }) {
@@ -52,7 +54,13 @@ export function ExecutionDetailScreen({
         {loading && <p className="m-0 text-sm text-muted">Loading…</p>}
         {!loading && !execution && <p className="m-0 text-sm text-muted">{error ?? "Execution not found."}</p>}
         {!loading && execution && (
-          <ExecutionResultView execution={execution} executionDetail={executionDetail} timedOut={timedOut} error={error} />
+          <ExecutionResultView
+            execution={execution}
+            executionDetail={executionDetail}
+            timedOut={timedOut}
+            error={error}
+            onViewSnapshot={onViewSnapshot}
+          />
         )}
       </div>
     </div>

@@ -79,13 +79,15 @@ export function ProjectLayout({
 
   const basePath = `/projects/${projectId}`;
   const isSettingsPath = SETTINGS_TABS.some((tab) => location.pathname.startsWith(`${basePath}${tab.path}`));
-  const activeTab: "overview" | "apis" | "runs" | "settings" = isSettingsPath
+  const activeTab: "overview" | "apis" | "runs" | "snapshots" | "settings" = isSettingsPath
     ? "settings"
     : location.pathname.startsWith(`${basePath}/apis`)
       ? "apis"
       : location.pathname.startsWith(`${basePath}/runs`)
         ? "runs"
-        : "overview";
+        : location.pathname.startsWith(`${basePath}/snapshots`)
+          ? "snapshots"
+          : "overview";
 
   function goTo(path: string) {
     setSettingsOpen(false);
@@ -144,6 +146,9 @@ export function ProjectLayout({
         </div>
         <button onClick={() => goTo("/runs")} className={activeTab === "runs" ? TAB_ACTIVE_CLASS : TAB_CLASS}>
           Test Runs
+        </button>
+        <button onClick={() => goTo("/snapshots")} className={activeTab === "snapshots" ? TAB_ACTIVE_CLASS : TAB_CLASS}>
+          Snapshots
         </button>
         <button disabled title="Coming later — not part of this release." className={DISABLED_TAB_CLASS}>
           Comparisons

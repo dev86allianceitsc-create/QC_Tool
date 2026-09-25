@@ -56,10 +56,66 @@
 // Snapshot/Comparison (SAME/DIFFERENT, Baseline/Target, field diff) remain
 // explicitly out of scope — Run only stores Input and Output.
 //
+// Group 5 — Snapshot & History implementation.
+// Source of truth: document/database/AnD_Database_Group_5_Snapshot_FINAL.docx
+// and REQ-SNP-001..008/BA FINAL/Client Confirmed as applicable. Adds
+// `snapshots` (at most one immutable row per run_execution, recognized
+// complete only once its payload is saved in the same transaction),
+// `snapshot_payloads` (1:1 full request/response body, no truncation, up to
+// SNAPSHOT_MAX_PAYLOAD_BYTES per field — 25 MB), `snapshot_invalidations`
+// (0..1 append-only audit row; presence = invalidated, same derived-status
+// convention as user_sessions), and `snapshot_save_attempts` (0..N
+// diagnostic event log per run_execution, no payload — the retry trail, not
+// the authoritative "saved" signal). No `updated_at` on any of the four new
+// tables — immutable/append-only, same convention as audit_logs. Eligibility
+// is strictly HTTP 2xx (REQ-SNP-001/004/006), independently of
+// run_executions.execution_outcome's broader RESPONSE_RECEIVED bucket (which
+// also includes 3xx). "First vs. subsequent" Snapshot is derived at query
+// time (ORDER BY completed_at, snapshot_id within the same
+// api_id+environment_id+auth_context_key scope), not a stored flag.
+// Authentication Configuration gains `context_version` (Group 5 Q5 answer):
+// a stable identity/access-scope version, incremented on identity/access
+// change but not on same-identity credential rotation, frozen into each
+// Snapshot's auth_context_key at creation time — never the token/password
+// itself, never rewritten on past Snapshots.
+//
+// Group 6/7 — Comparison Engine & Result/Classification implementation.
+// Source of truth: document/database/AnD_Database_Group_6_7_Comparison_v0.3.md
+// and REQ-CMP-001..018/REQ-ENV-004/REQ-OUT-002 (CMP-013..018 BA Proposed,
+// CMP-002 Priority Should). Adds `comparison_chains` (chain-compare request
+// identity), `comparisons` (one immutable row per A->B pair - Snapshot A is
+// baseline, Snapshot B is target, CHECK-enforced A<>B), `comparison_attempts`
+// (append-only processing/retry history per Comparison - at most one
+// COMPLETED attempt per Comparison via a raw partial unique index),
+// `comparison_findings` (output difference / input mismatch detail per
+// attempt, never a copy of raw Snapshot bytes) and
+// `comparison_classification_events` (append-only Expected/Unexpected
+// history, latest revision wins). Extends `run_executions` with
+// baseline_snapshot_id/baseline_selected_at/comparison_availability_reason_code
+// (NO_BASELINE | NO_NEW_SNAPSHOT) - Execution-level availability, never a
+// Comparison Result; no Comparison is ever created for a one-sided pair.
+// Comparison's project_id/api_id/environment_id describe Snapshot A's scope
+// only (RS-CMP-016-01) - intentionally NOT CHECK-enforced to match Snapshot
+// B's scope, since a scope-mismatched pair must still persist as
+// BLOCKED/CONTEXT_MISMATCH or BLOCKED/ENVIRONMENT_MISMATCH rather than be
+// rejected at insert. source_execution_id uses a plain @unique (not a raw
+// partial index): PostgreSQL treats multiple NULLs as distinct by default,
+// which already satisfies "unique for AUTO_EXECUTION, NULL otherwise"
+// without extra raw SQL, given the paired CHECK that ties source_kind =
+// AUTO_EXECUTION to source_execution_id being NOT NULL. No policy/rule
+// version master table exists yet in the repo (DB-VERIFY-03) -
+// comparison_attempts.applied_rule_manifest is an application-level
+// hardcoded default manifest at this DB phase, a known limitation. RESTRICT
+// everywhere (no CASCADE), no `updated_at` on any of the 5 new tables - same
+// immutable/append-only convention as audit_logs/snapshots.
+//
 // Scope: users, user_sessions, projects, project_memberships, audit_logs,
 // api_configurations, environments, api_environment_configs,
 // request_parameter_definitions, request_body_definitions,
-// authentication_configurations, runs, run_executions.
+// authentication_configurations, runs, run_executions, snapshots,
+// snapshot_payloads, snapshot_invalidations, snapshot_save_attempts,
+// comparison_chains, comparisons, comparison_attempts, comparison_findings,
+// comparison_classification_events.
 
 datasource db {
   provider = "postgresql"
@@ -90,10 +146,16 @@ model User {
   updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz
   note        String?   @db.Text
 
-  sessions    UserSession[]
-  memberships ProjectMembership[]
-  auditLogs   AuditLog[]
-  runs        Run[]
+  sessions              UserSession[]
+  memberships           ProjectMembership[]
+  auditLogs             AuditLog[]
+  runs                  Run[]
+  snapshotsInitiated    Snapshot[]
+  snapshotInvalidations SnapshotInvalidation[]
+
+  comparisonChainsRequested      ComparisonChain[]
+  comparisonsRequested           Comparison[]
+  comparisonClassificationEvents ComparisonClassificationEvent[]
 
   @@map("users")
 }
@@ -151,6 +213,10 @@ model Project {
   apis         ApiConfiguration[]
   environments Environment[]
   runs         Run[]
+  snapshots    Snapshot[]
+
+  comparisonChains ComparisonChain[]
+  comparisons      Comparison[]
 
   @@index([projectStatus, deletedAt], map: "idx_projects_status_deleted")
   @@map("projects")
@@ -259,6 +325,9 @@ model ApiConfiguration {
   bodyDefinition       RequestBodyDefinition?
   authConfigs          AuthenticationConfiguration[]
   runExecutions        RunExecution[]
+  snapshots            Snapshot[]
+  comparisonChains     ComparisonChain[]
+  comparisons          Comparison[]
 
   @@index([projectId, deletedAt], map: "idx_api_configurations_project_deleted")
   @@map("api_configurations")
@@ -297,9 +366,12 @@ model Environment {
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
   note      String?  @db.Text
 
-  configs     ApiEnvironmentConfig[]
-  authConfigs AuthenticationConfiguration[]
-  runs        Run[]
+  configs          ApiEnvironmentConfig[]
+  authConfigs      AuthenticationConfiguration[]
+  runs             Run[]
+  snapshots        Snapshot[]
+  comparisonChains ComparisonChain[]
+  comparisons      Comparison[]
 
   @@index([projectId], map: "idx_environments_project_id")
   @@map("environments")
@@ -418,6 +490,16 @@ model AuthenticationConfiguration {
   // CHECK ck_authentication_configurations_auth_type, not modeled here.
   authType String @map("auth_type") @db.VarChar(20)
 
+  // Stable identity/access-scope version for this API+Environment's
+  // Authentication Configuration (REQ-SNP-003/006/008, Group 5 Q5 answer).
+  // Incremented when identity or access materially changes (auth_type
+  // change, LOGIN_FORM username change, credential removal, or a
+  // BEARER_TOKEN replacement not explicitly confirmed as the same
+  // identity/access); NOT incremented for a same-identity credential
+  // rotation. Frozen onto each Snapshot at creation time as part of
+  // auth_context_key — never rewritten retroactively on past Snapshots.
+  contextVersion Int @default(1) @map("context_version")
+
   // LOGIN_FORM config — non-secret, null unless auth_type = LOGIN_FORM.
   loginUrl          String? @map("login_url") @db.VarChar(2048)
   username          String? @db.VarChar(255)
@@ -482,6 +564,7 @@ model Run {
   note      String?   @db.Text
 
   executions RunExecution[]
+  snapshots  Snapshot[]
 
   @@index([projectId, createdAt(sort: Desc)], map: "idx_runs_project_id_created_at")
   @@map("runs")
@@ -582,8 +665,487 @@ model RunExecution {
   durationMs Int?      @map("duration_ms")
   note       String?   @db.Text
 
+  // Group 6/7 Comparison - baseline chosen right before dispatch (CMP-003/013,
+  // AnD Section 4.1); never reselected once set. NULL baseline_snapshot_id
+  // means no baseline was available at Execution time, never a fabricated
+  // ID. baseline_selected_at proves the "chosen before dispatch" ordering
+  // independently of requestSentAt. comparison_availability_reason_code is
+  // Execution-level availability only (NO_BASELINE | NO_NEW_SNAPSHOT,
+  // ck_run_executions_comparison_availability_reason_code) - never a
+  // Comparison Result, and NULL whenever both a baseline and an eligible
+  // target Snapshot exist.
+  baselineSnapshotId               String?   @map("baseline_snapshot_id") @db.Uuid
+  baselineSnapshot                 Snapshot? @relation("RunExecutionBaselineSnapshot", fields: [baselineSnapshotId], references: [snapshotId], onDelete: Restrict)
+  baselineSelectedAt               DateTime? @map("baseline_selected_at") @db.Timestamptz
+  comparisonAvailabilityReasonCode String?   @map("comparison_availability_reason_code") @db.VarChar(32)
+
+  snapshot            Snapshot?             @relation("RunExecutionTargetSnapshot")
+  saveAttempts        SnapshotSaveAttempt[]
+  comparisonsAsSource Comparison[]
+
   @@unique([runId, apiId], map: "uq_run_executions_run_id_api_id")
   @@unique([runId, executionOrder], map: "uq_run_executions_run_id_execution_order")
   @@index([apiId, createdAt(sort: Desc)], map: "idx_run_executions_api_id_created_at")
+  @@index([baselineSnapshotId], map: "idx_run_executions_baseline_snapshot_id")
   @@map("run_executions")
+}
+
+// snapshots — Group 5 Snapshot & History, document/database/AnD_Database_Group_5_Snapshot_FINAL.docx
+// and REQ-SNP-001/002/003/004/006/008. At most one Snapshot per RunExecution
+// (uq_snapshots_run_execution_id — the DB-level guarantee for REQ-SNP-006
+// RS-SNP-006-05 Execution Uniqueness). Recognized "completed" only once this
+// row and its SnapshotPayload are written together in the same transaction
+// (SNP-002 RS-SNP-002-01 completion boundary) — a row here with no payload
+// row never happens; a failed save writes only a SnapshotSaveAttempt, never
+// a Snapshot. Immutable once written: no application Update/Delete, no
+// updated_at column (same convention as AuditLog). Eligibility for creating
+// a Snapshot at all is strictly HTTP 2xx (SNP-001/004/006) — narrower than
+// run_executions.execution_outcome's RESPONSE_RECEIVED bucket, which also
+// includes 3xx. "First vs. subsequent" is derived at query time (ORDER BY
+// completed_at, snapshot_id within the same
+// api_id+environment_id+auth_context_key scope, idx_snapshots_scope_completed_at)
+// rather than stored as a flag, so the meaning never needs retroactive
+// correction if history is reinterpreted.
+model Snapshot {
+  snapshotId String @id @default(uuid()) @map("snapshot_id") @db.Uuid
+
+  runExecutionId String       @unique(map: "uq_snapshots_run_execution_id") @map("run_execution_id") @db.Uuid
+  runExecution   RunExecution @relation("RunExecutionTargetSnapshot", fields: [runExecutionId], references: [runExecutionId], onDelete: Restrict)
+
+  runId String @map("run_id") @db.Uuid
+  run   Run    @relation(fields: [runId], references: [runId], onDelete: Restrict)
+
+  projectId String  @map("project_id") @db.Uuid
+  project   Project @relation(fields: [projectId], references: [projectId], onDelete: Restrict)
+
+  apiId String           @map("api_id") @db.Uuid
+  api   ApiConfiguration @relation(fields: [apiId], references: [apiId], onDelete: Restrict)
+
+  environmentId String      @map("environment_id") @db.Uuid
+  environment   Environment @relation(fields: [environmentId], references: [environmentId], onDelete: Restrict)
+
+  // Historical context (REQ-SNP-003 RS-SNP-003-03): identifying names frozen
+  // at execution time, so a later rename of the Project/API/Environment does
+  // not retroactively alter what this Snapshot's history shows.
+  projectNameAtExecution     String @map("project_name_at_execution") @db.VarChar(255)
+  apiNameAtExecution         String @map("api_name_at_execution") @db.VarChar(255)
+  environmentNameAtExecution String @map("environment_name_at_execution") @db.VarChar(100)
+
+  // Authentication Context (REQ-SNP-003 RS-SNP-003-04, REQ-SNP-006
+  // RS-SNP-006-01/07, Group 5 Q5 answer). auth_type mirrors
+  // authentication_configurations.auth_type's domain (raw CHECK
+  // ck_snapshots_auth_type). auth_context_version is the
+  // AuthenticationConfiguration.context_version value at the moment this
+  // Snapshot was created — frozen here, never rewritten as the live
+  // configuration's context_version later changes. auth_identity_label is a
+  // non-secret identity hint (LOGIN_FORM username, or null for NONE/
+  // BEARER_TOKEN) for display only — never the credential itself.
+  // auth_context_key is the computed SHA-256 fingerprint
+  // (computeAuthContextKey) used to scope "same context" comparisons; it
+  // never includes the token/password value.
+  authType           String  @map("auth_type") @db.VarChar(20)
+  authContextVersion Int     @map("auth_context_version")
+  authIdentityLabel  String? @map("auth_identity_label") @db.VarChar(255)
+  authContextKey     String  @map("auth_context_key") @db.VarChar(64)
+
+  initiatedByUserId String @map("initiated_by_user_id") @db.Uuid
+  initiatedBy       User   @relation(fields: [initiatedByUserId], references: [userId], onDelete: Restrict)
+  initiatedByLabel  String @map("initiated_by_label") @db.VarChar(320)
+
+  // Actual Request (REQ-SNP-003 RS-SNP-003-05, REQ-SNP-004 RS-SNP-004-02),
+  // taken after Request Assembly — the same source RunExecution already
+  // captured, not the Request Input Definition.
+  httpMethod           String  @map("http_method") @db.VarChar(10)
+  requestUrl           String  @map("request_url") @db.VarChar(4096)
+  requestContentType   String? @map("request_content_type") @db.VarChar(255)
+  // Request headers actually sent for this Execution (REQ-SNP-003 §C),
+  // added by a later migration than the rest of this table. Same shape and
+  // redaction convention as run_executions.request_headers_safe — the
+  // Authorization value is masked, every other header is stored as typed by
+  // the user. Null for any Snapshot created before this column existed.
+  requestHeaders       Json?   @map("request_headers") @db.JsonB
+  requestBodySizeBytes Int?    @map("request_body_size_bytes")
+
+  // Actual Response (REQ-SNP-003 RS-SNP-003-06, REQ-SNP-004). http_status_code
+  // is constrained to the 200-299 eligibility range at the DB layer
+  // (ck_snapshots_http_status_code) — a Snapshot is only ever created for a
+  // 2xx Execution (SNP-001/004/006), so this is a redundant-by-design
+  // guarantee, not a new business rule. response_completeness distinguishes
+  // a full body from a partial HTTP 206 range (REQ-SNP-004 RS-SNP-004-12);
+  // content_range_header carries the Content-Range value when present.
+  httpStatusCode        Int?    @map("http_status_code")
+  responseContentType   String? @map("response_content_type") @db.VarChar(255)
+  // Response headers actually received for this Execution (REQ-SNP-003
+  // §D), added by the same later migration as request_headers. Unredacted,
+  // same shape as run_executions.response_headers_safe. Null for any
+  // Snapshot created before this column existed.
+  responseHeaders       Json?   @map("response_headers") @db.JsonB
+  responseBodySizeBytes Int?    @map("response_body_size_bytes")
+  responseCompleteness  String  @map("response_completeness") @db.VarChar(20)
+  contentRangeHeader    String? @map("content_range_header") @db.VarChar(255)
+
+  // Time (REQ-SNP-003 Section 5.E). requested_at/started_at are only ever
+  // populated when the source RunExecution has a real value for them — never
+  // fabricated (RS-SNP-003-08). completed_at is required and drives the
+  // "first Snapshot" ordering.
+  requestedAt DateTime? @map("requested_at") @db.Timestamptz
+  startedAt   DateTime? @map("started_at") @db.Timestamptz
+  completedAt DateTime  @map("completed_at") @db.Timestamptz
+  durationMs  Int?      @map("duration_ms")
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  // API/Database Version of the source Execution (REQ-SNP-003
+  // RS-SNP-003-09) — same VARCHAR(100) NOT NULL shape as
+  // run_executions.api_version/database_version; "UNKNOWN" is a business
+  // value written by the application, not a DB default.
+  apiVersion      String @map("api_version") @db.VarChar(100)
+  databaseVersion String @map("database_version") @db.VarChar(100)
+
+  // Execution Outcome (REQ-SNP-003 RS-SNP-003-11) — kept distinct from
+  // http_status_code per the same Status/Outcome separation as
+  // run_executions. Reuses run_executions' execution_outcome value domain
+  // (ck_snapshots_execution_outcome mirrors ck_run_executions_execution_outcome).
+  executionOutcome String @map("execution_outcome") @db.VarChar(20)
+
+  payload      SnapshotPayload?
+  invalidation SnapshotInvalidation?
+
+  // Group 6/7 Comparison back-relations - a Snapshot may be the baseline
+  // chosen for 0..N later Executions, and/or Snapshot A or Snapshot B of
+  // 0..N Comparisons (AnD Section 2 cardinality table).
+  baselineForExecutions RunExecution[] @relation("RunExecutionBaselineSnapshot")
+  comparisonsAsBaseline Comparison[]   @relation("ComparisonBaselineSnapshot")
+  comparisonsAsTarget   Comparison[]   @relation("ComparisonTargetSnapshot")
+
+  @@index([apiId, environmentId, authContextKey, completedAt], map: "idx_snapshots_scope_completed_at")
+  @@index([runId], map: "idx_snapshots_run_id")
+  @@index([projectId, createdAt(sort: Desc)], map: "idx_snapshots_project_created_at")
+  @@map("snapshots")
+}
+
+// snapshot_payloads — true 1:1 with snapshots, split out so the large BYTEA
+// request/response bodies sit off the frequently-scanned snapshots row.
+// Written in the same DB transaction as its parent Snapshot (SNP-004 BR-06 /
+// EXC-02) — a partial write can never produce a recognized-complete
+// Snapshot without its payload. A nullable Bytes column losslessly
+// represents all three body states required by REQ-SNP-004 RS-SNP-004-11:
+// NULL = absent, zero-length = empty, 4-byte "null" = JSON null content —
+// no separate state enum column is needed.
+model SnapshotPayload {
+  snapshotId String   @id @map("snapshot_id") @db.Uuid
+  snapshot   Snapshot @relation(fields: [snapshotId], references: [snapshotId], onDelete: Restrict)
+
+  requestBody  Bytes? @map("request_body")
+  responseBody Bytes? @map("response_body")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@map("snapshot_payloads")
+}
+
+// snapshot_invalidations — 0..1 per Snapshot, append-only audit row (REQ-SNP-002
+// RS-SNP-002-06/07). Presence of this row IS the "Invalidated" signal — same
+// derived-status convention as user_sessions (no status column there
+// either). Never updated or removed once written; the original Snapshot
+// content is never rewritten alongside it.
+model SnapshotInvalidation {
+  invalidationId String @id @default(uuid()) @map("invalidation_id") @db.Uuid
+
+  snapshotId String   @unique(map: "uq_snapshot_invalidations_snapshot_id") @map("snapshot_id") @db.Uuid
+  snapshot   Snapshot @relation(fields: [snapshotId], references: [snapshotId], onDelete: Restrict)
+
+  reason String @db.Text
+
+  invalidatedByUserId String @map("invalidated_by_user_id") @db.Uuid
+  invalidatedBy       User   @relation(fields: [invalidatedByUserId], references: [userId], onDelete: Restrict)
+  invalidatedByLabel  String @map("invalidated_by_label") @db.VarChar(320)
+
+  invalidatedAt DateTime @default(now()) @map("invalidated_at") @db.Timestamptz
+
+  @@map("snapshot_invalidations")
+}
+
+// snapshot_save_attempts — 0..N per RunExecution, diagnostic event log only
+// (REQ-SNP-005 RS-SNP-005-10, REQ-SNP-006 RS-SNP-006-09/10). NOT the
+// authoritative "saved" signal — that is the existence of a snapshots (+
+// snapshot_payloads) row. No payload here, ever. Many rows are expected for
+// a single RunExecution across retries (EXC-02); this table intentionally
+// has no unique constraint on run_execution_id.
+model SnapshotSaveAttempt {
+  attemptId String @id @default(uuid()) @map("attempt_id") @db.Uuid
+
+  runExecutionId String       @map("run_execution_id") @db.Uuid
+  runExecution   RunExecution @relation(fields: [runExecutionId], references: [runExecutionId], onDelete: Restrict)
+
+  // attempt_status domain: SUCCEEDED | FAILED. Enforced via raw CHECK
+  // ck_snapshot_save_attempts_attempt_status, not modeled here.
+  attemptStatus String @map("attempt_status") @db.VarChar(20)
+
+  errorReasonCode String? @map("error_reason_code") @db.VarChar(50)
+  errorDetail     String? @map("error_detail") @db.Text
+
+  attemptedAt DateTime @default(now()) @map("attempted_at") @db.Timestamptz
+
+  @@index([runExecutionId, attemptedAt], map: "idx_snapshot_save_attempts_execution_time")
+  @@map("snapshot_save_attempts")
+}
+
+// comparison_chains - Group 6/7, document/database/AnD_Database_Group_6_7_Comparison_v0.3.md
+// Section 4.2. Identity of a chain-compare request: only a request with at
+// least 2 Snapshots is ever persisted, and its ordered pairs are the
+// `comparisons` rows sharing this comparison_chain_id (pair_ordinal is the
+// order, no duplicate JSON array is stored here). No whole-chain status/
+// Result column - progress, if ever needed by UI, is derived from the
+// member pairs' attempt status (CMP-004/016).
+model ComparisonChain {
+  comparisonChainId String @id @default(uuid()) @map("comparison_chain_id") @db.Uuid
+
+  projectId String  @map("project_id") @db.Uuid
+  project   Project @relation(fields: [projectId], references: [projectId], onDelete: Restrict)
+
+  apiId String           @map("api_id") @db.Uuid
+  api   ApiConfiguration @relation(fields: [apiId], references: [apiId], onDelete: Restrict)
+
+  environmentId String      @map("environment_id") @db.Uuid
+  environment   Environment @relation(fields: [environmentId], references: [environmentId], onDelete: Restrict)
+
+  requestedByUserId String @map("requested_by") @db.Uuid
+  requestedBy       User   @relation(fields: [requestedByUserId], references: [userId], onDelete: Restrict)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  note      String?  @db.Text
+
+  comparisons Comparison[]
+
+  @@index([projectId, createdAt(sort: Desc)], map: "idx_comparison_chains_project_id_created_at")
+  @@map("comparison_chains")
+}
+
+// comparisons - Group 6/7 Section 4.3/6.1. One immutable row per A->B pair;
+// A is always Snapshot baseline, B is always Snapshot target
+// (ck_comparisons_baseline_target_distinct: A<>B). project_id/api_id/
+// environment_id describe **Snapshot A's scope only** (RS-CMP-016-01) -
+// taken from Snapshot A at creation time, never authoritative for B and
+// never accepted from the frontend. A pair that fails the CMP-005 scope/
+// auth-context gate still persists here with status BLOCKED and a reason on
+// its ComparisonAttempt: this table deliberately has **no CHECK** forcing
+// A/B to share scope, matching AnD's explicit instruction not to block
+// insert on that gate. source_execution_id is required and unique for
+// source_kind = AUTO_EXECUTION only (ck_comparisons_source_execution_id) -
+// a plain @unique is enough because PostgreSQL already treats multiple NULLs
+// as distinct, satisfying "unique for AUTO, NULL otherwise" without a raw
+// partial index. comparison_chain_id/pair_ordinal are required together for
+// source_kind = CHAIN_PAIR only (ck_comparisons_chain_fields), unique per
+// chain (uq_comparisons_chain_id_pair_ordinal).
+model Comparison {
+  comparisonId String @id @default(uuid()) @map("comparison_id") @db.Uuid
+
+  projectId String  @map("project_id") @db.Uuid
+  project   Project @relation(fields: [projectId], references: [projectId], onDelete: Restrict)
+
+  apiId String           @map("api_id") @db.Uuid
+  api   ApiConfiguration @relation(fields: [apiId], references: [apiId], onDelete: Restrict)
+
+  environmentId String      @map("environment_id") @db.Uuid
+  environment   Environment @relation(fields: [environmentId], references: [environmentId], onDelete: Restrict)
+
+  baselineSnapshotId String   @map("baseline_snapshot_id") @db.Uuid
+  baselineSnapshot   Snapshot @relation("ComparisonBaselineSnapshot", fields: [baselineSnapshotId], references: [snapshotId], onDelete: Restrict)
+
+  targetSnapshotId String   @map("target_snapshot_id") @db.Uuid
+  targetSnapshot   Snapshot @relation("ComparisonTargetSnapshot", fields: [targetSnapshotId], references: [snapshotId], onDelete: Restrict)
+
+  // source_kind domain: AUTO_EXECUTION | MANUAL_PAIR | BASELINE_LATEST |
+  // CHAIN_PAIR. BASELINE_LATEST is a manual subtype, never merged with
+  // automatic. Enforced via raw CHECK ck_comparisons_source_kind.
+  sourceKind String @map("source_kind") @db.VarChar(32)
+
+  sourceExecutionId String?       @unique(map: "uq_comparisons_source_execution_id") @map("source_execution_id") @db.Uuid
+  sourceExecution   RunExecution? @relation(fields: [sourceExecutionId], references: [runExecutionId], onDelete: Restrict)
+
+  comparisonChainId String?          @map("comparison_chain_id") @db.Uuid
+  comparisonChain   ComparisonChain? @relation(fields: [comparisonChainId], references: [comparisonChainId], onDelete: Restrict)
+  // 1-based order within the chain. Required together with
+  // comparison_chain_id (ck_comparisons_chain_fields); > 0 when present
+  // (ck_comparisons_pair_ordinal).
+  pairOrdinal       Int?             @map("pair_ordinal")
+
+  // Actor for MANUAL_PAIR/BASELINE_LATEST/CHAIN_PAIR; NULL for
+  // AUTO_EXECUTION (system-originated, no user actor). Design Proposal
+  // (AnD Section 4.3).
+  requestedByUserId String? @map("requested_by") @db.Uuid
+  requestedBy       User?   @relation(fields: [requestedByUserId], references: [userId], onDelete: Restrict)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  note      String?  @db.Text
+
+  attempts             ComparisonAttempt[]
+  classificationEvents ComparisonClassificationEvent[]
+
+  @@unique([comparisonChainId, pairOrdinal], map: "uq_comparisons_chain_id_pair_ordinal")
+  @@index([baselineSnapshotId], map: "idx_comparisons_baseline_snapshot_id")
+  @@index([targetSnapshotId], map: "idx_comparisons_target_snapshot_id")
+  @@index([projectId, apiId, createdAt(sort: Desc)], map: "idx_comparisons_project_id_api_id_created_at")
+  @@map("comparisons")
+}
+
+// comparison_attempts - Group 6/7 Section 4.4/5/6.1. Append-only
+// processing/retry history per Comparison (uq_comparison_attempts_comparison_id_attempt_number,
+// attempt_number > 0). `COMPLETED <=> comparison_result IN (SAME, DIFFERENT)`
+// is enforced by cross-field CHECK ck_comparison_attempts_completed_result;
+// every other status keeps comparison_result NULL. A raw partial unique
+// index (uq_comparison_attempts_completed_per_comparison, migration-only -
+// Prisma cannot express a partial index declaratively, same convention as
+// ApiConfiguration's active-uniqueness index) guarantees at most one
+// COMPLETED attempt per Comparison at the DB layer; retries never update a
+// terminal attempt. applied_rule_manifest is an immutable snapshot of the
+// rule/version/policy/exclusion/representation boundary used by this
+// attempt (CMP-006/007/008/016/017/018) - no policy/version master table
+// exists yet in the repo (DB-VERIFY-03), so the application writes a
+// hardcoded default manifest here as a known limitation.
+model ComparisonAttempt {
+  comparisonAttemptId String @id @default(uuid()) @map("comparison_attempt_id") @db.Uuid
+
+  comparisonId String     @map("comparison_id") @db.Uuid
+  comparison   Comparison @relation(fields: [comparisonId], references: [comparisonId], onDelete: Restrict)
+
+  attemptNumber Int @map("attempt_number")
+
+  // processing_status domain: QUEUED | RUNNING | BLOCKED | FAILED |
+  // COMPLETED. Enforced via raw CHECK ck_comparison_attempts_processing_status.
+  processingStatus String @map("processing_status") @db.VarChar(20)
+
+  // stopped_at_gate domain (Design Proposal - AnD names the 4 gate concepts
+  // but does not freeze exact tokens, Section 4.4): ELIGIBILITY | INPUT |
+  // OUTPUT | PERSISTENCE. NULL while not yet stopped. Enforced via raw CHECK
+  // ck_comparison_attempts_stopped_at_gate.
+  stoppedAtGate String? @map("stopped_at_gate") @db.VarChar(20)
+
+  // reason_code domain per AnD Section 5 (one primary reason per first
+  // stopping gate) - CONTEXT_MISMATCH/ENVIRONMENT_MISMATCH/
+  // AUTH_CONTEXT_UNKNOWN/SNAPSHOT_INVALIDATED/SNAPSHOT_INCOMPLETE/
+  // INPUT_MISMATCH/UNSUPPORTED_FORMAT/UNSUPPORTED_ENCODING/
+  // PAYLOAD_UNAVAILABLE/ENGINE_ERROR/PERSISTENCE_ERROR. Enforced via raw
+  // CHECK ck_comparison_attempts_reason_code. NO_BASELINE/NO_NEW_SNAPSHOT
+  // are Execution availability values, never valid here.
+  reasonCode       String? @map("reason_code") @db.VarChar(40)
+  reasonDetailSafe String? @map("reason_detail_safe") @db.Text
+
+  // input_check_outcome domain: COMPATIBLE | MISMATCH; NULL before the input
+  // gate or when not evaluable. Enforced via raw CHECK
+  // ck_comparison_attempts_input_check_outcome.
+  inputCheckOutcome String? @map("input_check_outcome") @db.VarChar(20)
+
+  // comparison_result domain: SAME | DIFFERENT; NULL unless COMPLETED
+  // (cross-field CHECK ck_comparison_attempts_completed_result).
+  comparisonResult String? @map("comparison_result") @db.VarChar(20)
+
+  appliedRuleManifest Json? @map("applied_rule_manifest") @db.JsonB
+
+  startedAt DateTime? @map("started_at") @db.Timestamptz
+  endedAt   DateTime? @map("ended_at") @db.Timestamptz
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  findings ComparisonFinding[]
+
+  @@unique([comparisonId, attemptNumber], map: "uq_comparison_attempts_comparison_id_attempt_number")
+  @@map("comparison_attempts")
+}
+
+// comparison_findings - Group 6/7 Section 4.5. 0..N per attempt: INPUT phase
+// findings are a safe mismatch diagnosis, OUTPUT phase findings are Detail
+// (unique(attempt_id, phase, finding_ordinal) for stable pagination). Never
+// stores raw value_a/value_b - that would duplicate Authorization/cookie/
+// file/PII bytes already held immutably by Snapshot; only path/offset/kind/
+// a short redacted summary are kept, and Detail is re-derived from Snapshot
+// by a backend that re-checks permission (CMP-015/017/018). a_value_kind/
+// b_value_kind and rule_code are intentionally left without a CHECK
+// constraint: AnD lists their domains as open-ended/non-exhaustive (Section
+// 4.5 "...", tied to whatever applied_rule_manifest defines), the same
+// "taxonomy not yet frozen" precedent already used for audit_logs.event_type.
+model ComparisonFinding {
+  comparisonFindingId String @id @default(uuid()) @map("comparison_finding_id") @db.Uuid
+
+  comparisonAttemptId String            @map("comparison_attempt_id") @db.Uuid
+  comparisonAttempt   ComparisonAttempt @relation(fields: [comparisonAttemptId], references: [comparisonAttemptId], onDelete: Restrict)
+
+  // phase domain: INPUT | OUTPUT. Enforced via raw CHECK
+  // ck_comparison_findings_phase.
+  phase String @db.VarChar(20)
+
+  // component domain, used per phase: METHOD/URL/REQUEST_HEADER/
+  // REQUEST_BODY (INPUT) or HTTP_STATUS/RESPONSE_HEADER/RESPONSE_BODY
+  // (OUTPUT). Enforced via raw CHECK ck_comparison_findings_component.
+  component String @db.VarChar(32)
+
+  findingOrdinal Int @map("finding_ordinal")
+
+  // difference_kind domain: PRESENCE | TYPE | VALUE | ORDER | LENGTH |
+  // RAW_BYTES. Enforced via raw CHECK ck_comparison_findings_difference_kind.
+  differenceKind String @map("difference_kind") @db.VarChar(32)
+
+  // JSON path or header name when determinable; never a fabricated path for
+  // raw/binary content (CMP-015/017).
+  locationPath String? @map("location_path") @db.Text
+
+  // Raw byte span in each Snapshot, >= 0 when present
+  // (ck_comparison_findings_a_byte_offset / _b_byte_offset /
+  // _a_byte_length / _b_byte_length).
+  aByteOffset BigInt? @map("a_byte_offset")
+  bByteOffset BigInt? @map("b_byte_offset")
+  aByteLength BigInt? @map("a_byte_length")
+  bByteLength BigInt? @map("b_byte_length")
+
+  // Open-ended value-kind domain (ABSENT, NULL, EMPTY_STRING, EMPTY_ARRAY,
+  // NUMBER, STRING, ... - AnD Section 4.5) - no CHECK, see model doc comment.
+  aValueKind String? @map("a_value_kind") @db.VarChar(20)
+  bValueKind String? @map("b_value_kind") @db.VarChar(20)
+
+  // Rule/manifest entry that produced this finding, not a business root
+  // cause. Open-ended domain tied to applied_rule_manifest - no CHECK, see
+  // model doc comment.
+  ruleCode String @map("rule_code") @db.VarChar(60)
+
+  // Redacted description; Detail's authoritative source is Snapshot via a
+  // permission-checked backend, never raw secret content here.
+  safeSummary String? @map("safe_summary") @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@unique([comparisonAttemptId, phase, findingOrdinal], map: "uq_comparison_findings_attempt_id_phase_finding_ordinal")
+  @@map("comparison_findings")
+}
+
+// comparison_classification_events - Group 6/7 Section 4.6. Append-only
+// Expected/Unexpected history (CMP-002); only accepted by the application
+// when the Comparison already has a COMPLETED/DIFFERENT attempt - not
+// enforced by FK here, guarded by a backend transaction that locks the
+// Comparison and re-reads the latest completed attempt. The event with the
+// highest revision per Comparison is the current classification
+// (uq_comparison_classification_events_comparison_id_revision doubles as the
+// optimistic-concurrency conflict check); absence of any event means "not
+// yet classified" - there is no NONE/CLEAR value and no scope-approved CLEAR
+// operation.
+model ComparisonClassificationEvent {
+  comparisonClassificationEventId String @id @default(uuid()) @map("comparison_classification_event_id") @db.Uuid
+
+  comparisonId String     @map("comparison_id") @db.Uuid
+  comparison   Comparison @relation(fields: [comparisonId], references: [comparisonId], onDelete: Restrict)
+
+  // 1-based, increasing per Comparison (ck_comparison_classification_events_revision).
+  revision Int @map("revision")
+
+  // classification domain: EXPECTED | UNEXPECTED. Enforced via raw CHECK
+  // ck_comparison_classification_events_classification.
+  classification String @db.VarChar(20)
+
+  note String? @db.Text
+
+  classifiedByUserId String @map("classified_by") @db.Uuid
+  classifiedBy       User   @relation(fields: [classifiedByUserId], references: [userId], onDelete: Restrict)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@unique([comparisonId, revision], map: "uq_comparison_classification_events_comparison_id_revision")
+  @@map("comparison_classification_events")
 }

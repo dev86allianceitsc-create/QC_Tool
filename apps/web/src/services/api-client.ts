@@ -111,6 +111,49 @@ async function requestForm<T>(path: string, form: FormData, accessToken?: string
   return handleResponse<T>(response);
 }
 
+export interface BlobResult {
+  present: boolean;
+  blob: Blob | null;
+  contentType: string | null;
+}
+
+// Snapshot Content endpoint (SNP-004) returns raw bytes with a real
+// Content-Type — never the JSON error envelope on success, and never
+// wrapped/base64-encoded — so it can't go through handleResponse<T>, which
+// assumes JSON or text. 204 means the body part is genuinely absent (not an
+// error); error statuses (400/401/403/404) still return the usual envelope.
+async function requestBlob(path: string, accessToken?: string | null): Promise<BlobResult> {
+  const headers: Record<string, string> = {};
+  if (accessToken) {
+    headers["Authorization"] = `Bearer ${accessToken}`;
+  }
+
+  const response = await fetch(`${baseUrl()}${path}`, { method: "GET", headers });
+
+  if (response.status === 204) {
+    return { present: false, blob: null, contentType: null };
+  }
+
+  const contentType = response.headers.get("content-type") ?? "";
+
+  if (!response.ok) {
+    const isJson = contentType.includes("application/json");
+    const payload = isJson ? await response.json() : undefined;
+    if (payload && typeof payload === "object" && typeof (payload as ApiErrorBody).errorCode === "string") {
+      throw new ApiError(response.status, payload as ApiErrorBody);
+    }
+    throw new ApiError(response.status, {
+      errorCode: "NETWORK_ERROR",
+      message: response.statusText || "Request failed",
+      details: [],
+      requestId: "",
+    });
+  }
+
+  const blob = await response.blob();
+  return { present: true, blob, contentType: contentType || null };
+}
+
 export const apiClient = {
   get: <T>(path: string, accessToken?: string | null) => request<T>(path, { method: "GET", accessToken }),
   post: <T>(path: string, body?: unknown, accessToken?: string | null) =>
@@ -123,4 +166,5 @@ export const apiClient = {
   getText: (path: string, accessToken?: string | null): Promise<string> =>
     request<string>(path, { method: "GET", accessToken, responseType: "text" }),
   postForm: <T>(path: string, form: FormData, accessToken?: string | null) => requestForm<T>(path, form, accessToken),
+  getBlob: (path: string, accessToken?: string | null): Promise<BlobResult> => requestBlob(path, accessToken),
 };

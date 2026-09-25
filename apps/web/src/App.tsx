@@ -18,6 +18,8 @@ import { BatchRunPreparationScreen, type BatchDraftSnapshot } from "./features/a
 import { RunResultScreen } from "./features/apiEnvironment/RunResultScreen";
 import { ExecutionDetailScreen } from "./features/apiEnvironment/ExecutionDetailScreen";
 import { ProjectTestRunsScreen } from "./features/apiEnvironment/ProjectTestRunsScreen";
+import { SnapshotHistoryScreen } from "./features/snapshot/SnapshotHistoryScreen";
+import { SnapshotDetailScreen } from "./features/snapshot/SnapshotDetailScreen";
 
 interface User {
   email: string;
@@ -254,6 +256,42 @@ function ExecutionDetailRoute() {
       executionId={executionId}
       accessToken={ctx.accessToken}
       onBack={() => navigate(`/projects/${ctx.projectId}/runs/${runId}`)}
+      onViewSnapshot={(snapshotId) => navigate(`/projects/${ctx.projectId}/snapshots/${snapshotId}`)}
+      onSessionExpired={ctx.onSessionExpired}
+      onAccessDenied={ctx.onAccessDenied}
+    />
+  );
+}
+
+function SnapshotHistoryRoute() {
+  const ctx = useOutletContext<ProjectLayoutContext>();
+  const navigate = useNavigate();
+  return (
+    <SnapshotHistoryScreen
+      projectId={ctx.projectId}
+      accessToken={ctx.accessToken}
+      onViewSnapshot={(snapshotId) => navigate(`/projects/${ctx.projectId}/snapshots/${snapshotId}`)}
+      onSessionExpired={ctx.onSessionExpired}
+      onAccessDenied={ctx.onAccessDenied}
+    />
+  );
+}
+
+function SnapshotDetailRoute() {
+  const ctx = useOutletContext<ProjectLayoutContext>();
+  const { snapshotId } = useParams<{ snapshotId: string }>();
+  const navigate = useNavigate();
+  if (!snapshotId) return <Navigate to={`/projects/${ctx.projectId}/snapshots`} replace />;
+  return (
+    <SnapshotDetailScreen
+      projectId={ctx.projectId}
+      snapshotId={snapshotId}
+      accessToken={ctx.accessToken}
+      user={ctx.user}
+      onBack={() => navigate(`/projects/${ctx.projectId}/snapshots`)}
+      onViewSourceExecution={(runId, executionId) =>
+        navigate(`/projects/${ctx.projectId}/runs/${runId}/executions/${executionId}`)
+      }
       onSessionExpired={ctx.onSessionExpired}
       onAccessDenied={ctx.onAccessDenied}
     />
@@ -435,6 +473,8 @@ function AuthenticatedRoutes({
           <Route path="runs" element={<ProjectTestRunsRoute />} />
           <Route path="runs/:runId" element={<RunResultRoute />} />
           <Route path="runs/:runId/executions/:executionId" element={<ExecutionDetailRoute />} />
+          <Route path="snapshots" element={<SnapshotHistoryRoute />} />
+          <Route path="snapshots/:snapshotId" element={<SnapshotDetailRoute />} />
           <Route path="environments" element={<EnvironmentListRoute />} />
           <Route path="members" element={<MembersRoute />} />
         </Route>

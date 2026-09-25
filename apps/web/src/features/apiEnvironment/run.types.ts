@@ -93,6 +93,21 @@ export interface RunHttpResponse {
   originalSizeBytes: number | null;
 }
 
+// Mirrors apps/api/src/modules/run/runs.service.ts SnapshotSaveInfo exactly
+// (AnD API Group 5 Snapshot §7 Run Extension). `state: "PENDING"` is part of
+// the union but not currently emitted by deriveSnapshotSave — the backend
+// instead returns `snapshotSave: null` while the execution is still
+// PENDING/RUNNING, which callers should treat as the real "pending" signal
+// (see ExecutionResultView's SnapshotStatusBlock). `message` is documented as
+// intentionally never populated by the backend (avoids leaking raw error
+// text) — UI should render `state` + `reasonCode`, not rely on `message`.
+export interface SnapshotSaveInfo {
+  state: "SAVED" | "NOT_CREATED" | "SAVE_FAILED" | "PENDING" | "UNKNOWN";
+  snapshotId?: string;
+  reasonCode?: string;
+  message?: string;
+}
+
 export interface RunExecutionDetail {
   runId: string;
   executionId: string;
@@ -111,6 +126,7 @@ export interface RunExecutionDetail {
   startedAt: string | null;
   endedAt: string | null;
   durationMs: number | null;
+  snapshotSave: SnapshotSaveInfo | null;
 }
 
 export interface ApiRunExecutionListItem {

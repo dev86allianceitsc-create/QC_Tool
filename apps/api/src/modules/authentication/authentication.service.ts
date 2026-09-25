@@ -124,12 +124,23 @@ export class AuthenticationService {
       const previousAuthType = (existing?.authType ?? "NONE") as AuthType;
       const typeChanged = previousAuthType !== dto.authType;
 
+      // context_version (Group 5 Q5 answer): a brand-new row always starts at
+      // 1, never "increments". On an existing row, identity/access changed —
+      // and the version must advance — when auth_type itself changed, or
+      // when it stays LOGIN_FORM but the username changed. Technical-field-only
+      // edits (loginUrl, usernameField, passwordField, tokenResponsePath)
+      // never increment on their own.
+      const nextUsername = dto.authType === "LOGIN_FORM" ? (dto.username ?? null) : null;
+      const usernameChanged = !typeChanged && dto.authType === "LOGIN_FORM" && existing !== null && existing.username !== nextUsername;
+      const contextVersion = existing === null ? 1 : typeChanged || usernameChanged ? existing.contextVersion + 1 : existing.contextVersion;
+
       const data: Prisma.AuthenticationConfigurationUncheckedCreateInput = {
         apiId,
         environmentId,
         authType: dto.authType,
+        contextVersion,
         loginUrl: dto.authType === "LOGIN_FORM" ? (dto.loginUrl ?? null) : null,
-        username: dto.authType === "LOGIN_FORM" ? (dto.username ?? null) : null,
+        username: nextUsername,
         usernameField: dto.authType === "LOGIN_FORM" ? (dto.usernameField ?? null) : null,
         passwordField: dto.authType === "LOGIN_FORM" ? (dto.passwordField ?? null) : null,
         tokenResponsePath: dto.authType === "LOGIN_FORM" ? (dto.tokenResponsePath ?? null) : null,
@@ -227,6 +238,18 @@ export class AuthenticationService {
 
       const wasConfigured = hasSecret(existing);
 
+      // context_version (Group 5 Q5 answer). LOGIN_FORM password-only
+      // replacement never increments — this endpoint has no username field,
+      // so identity is unchanged by construction. BEARER_TOKEN is opaque: a
+      // replacement increments by default (new context) unless the config
+      // owner explicitly confirms sameIdentity. The very first credential
+      // ever set on this row never increments here — there is nothing to
+      // compare it against, and putConfiguration already counted any
+      // type-change that made a credential possible in the first place.
+      if (wasConfigured && authType === "BEARER_TOKEN" && dto.sameIdentity !== true) {
+        updateData.contextVersion = { increment: 1 };
+      }
+
       const saved = await tx.authenticationConfiguration.update({
         where: { apiId_environmentId: { apiId, environmentId } },
         data: updateData,
@@ -274,9 +297,12 @@ export class AuthenticationService {
         return this.toResult(apiId, environmentId, existing);
       }
 
+      // context_version (Group 5 Q5 answer): access materially changed to
+      // NOT_CONFIGURED, so this counts as an identity/access change.
       const saved = await tx.authenticationConfiguration.update({
         where: { apiId_environmentId: { apiId, environmentId } },
         data: {
+          contextVersion: { increment: 1 },
           passwordCiphertext: null,
           passwordIv: null,
           passwordAuthTag: null,

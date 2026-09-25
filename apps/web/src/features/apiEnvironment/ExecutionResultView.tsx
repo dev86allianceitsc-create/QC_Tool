@@ -1,4 +1,4 @@
-import type { RunExecutionDetail, RunExecutionListItem } from "./run.types";
+import type { RunExecutionDetail, RunExecutionListItem, SnapshotSaveInfo } from "./run.types";
 import { Badge, type BadgeTone } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { JsonHighlight } from "../../components/ui/JsonHighlight";
@@ -18,6 +18,14 @@ export const OUTCOME_TONE: Record<string, BadgeTone> = {
   RESPONSE_RECEIVED: "success",
   RUN_ERROR: "danger",
   SKIPPED: "warning",
+};
+
+const SNAPSHOT_SAVE_TONE: Record<SnapshotSaveInfo["state"], BadgeTone> = {
+  SAVED: "success",
+  NOT_CREATED: "neutral",
+  SAVE_FAILED: "danger",
+  PENDING: "info",
+  UNKNOWN: "neutral",
 };
 
 const UNFINISHED_STATUSES = new Set(["PENDING", "RUNNING"]);
@@ -45,6 +53,48 @@ export function formatTimestamp(value: string | null): string {
   }
 }
 
+// Renders RunExecutionDetail.snapshotSave (AnD API Group 5 Snapshot §7 Run
+// Extension). The backend only returns `null` while the execution itself is
+// still unfinished — treated here as a synthetic "PENDING" state — so once
+// `running` is false a concrete state is always expected.
+function SnapshotStatusBlock({
+  snapshotSave,
+  running,
+  onViewSnapshot,
+}: {
+  snapshotSave: SnapshotSaveInfo | null;
+  running: boolean;
+  onViewSnapshot?: (snapshotId: string) => void;
+}) {
+  const effective: SnapshotSaveInfo = snapshotSave ?? { state: running ? "PENDING" : "UNKNOWN" };
+  const snapshotId = effective.snapshotId;
+
+  return (
+    <div className="rounded-md border border-border bg-gray-50 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h4 className="m-0 text-xs font-semibold text-gray-900">Snapshot</h4>
+        <Badge tone={SNAPSHOT_SAVE_TONE[effective.state]} label={formatCode(effective.state)} />
+      </div>
+      {effective.state === "SAVED" && snapshotId && onViewSnapshot && (
+        <button
+          onClick={() => onViewSnapshot(snapshotId)}
+          className="mt-1.5 cursor-pointer border-none bg-transparent p-0 text-xs text-primary underline"
+        >
+          View Snapshot
+        </button>
+      )}
+      {effective.state === "NOT_CREATED" && effective.reasonCode && (
+        <p className="m-0 mt-1.5 text-xs text-muted">{formatCode(effective.reasonCode)}</p>
+      )}
+      {effective.state === "SAVE_FAILED" && (
+        <p className="m-0 mt-1.5 text-xs text-warning">
+          {effective.reasonCode ? formatCode(effective.reasonCode) : "The Snapshot could not be saved."}
+        </p>
+      )}
+    </div>
+  );
+}
+
 // Group Run — shared Execution Result display (UI-RUN-05) for one
 // RunExecution: Overview (status/outcome badges), Metadata, Input (request
 // sent) and Output (response/error) sections. Used both inline by Single
@@ -59,12 +109,14 @@ export function ExecutionResultView({
   timedOut,
   error,
   onRunAgain,
+  onViewSnapshot,
 }: {
   execution: RunExecutionListItem;
   executionDetail: RunExecutionDetail | null;
   timedOut?: boolean;
   error?: string | null;
   onRunAgain?: () => void;
+  onViewSnapshot?: (snapshotId: string) => void;
 }) {
   const running = UNFINISHED_STATUSES.has(execution.executionStatus);
   const showOutcomeBadge = execution.executionOutcome !== null && execution.executionOutcome !== execution.executionStatus;
@@ -168,6 +220,10 @@ export function ExecutionResultView({
             <p className="m-0 mt-1 text-xs text-warning">Response body was truncated in storage.</p>
           )}
         </div>
+      )}
+
+      {executionDetail && (
+        <SnapshotStatusBlock snapshotSave={executionDetail.snapshotSave} running={running} onViewSnapshot={onViewSnapshot} />
       )}
 
       {!running && onRunAgain && (

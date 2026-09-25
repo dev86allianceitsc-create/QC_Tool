@@ -67,6 +67,13 @@ export interface RunListItem {
   summary: RunExecutionSummary;
 }
 
+export interface SnapshotSaveInfo {
+  state: "SAVED" | "NOT_CREATED" | "SAVE_FAILED" | "PENDING" | "UNKNOWN";
+  snapshotId?: string;
+  reasonCode?: string;
+  message?: string;
+}
+
 export interface RunExecutionDetail {
   runId: string;
   executionId: string;
@@ -99,6 +106,10 @@ export interface RunExecutionDetail {
   startedAt: Date | null;
   endedAt: Date | null;
   durationMs: number | null;
+  // AnD API Group 5 Snapshot §7 "Existing Run API Extension" (SNP-001/006/007
+  // · Approved proposal) — backward-compatible optional field, added without
+  // touching executionOutcome/httpStatus above. See deriveSnapshotSave.
+  snapshotSave: SnapshotSaveInfo | null;
 }
 
 export interface ApiRunExecutionListItem {
@@ -368,6 +379,7 @@ export class RunsService {
       startedAt: exec.startedAt,
       endedAt: exec.endedAt,
       durationMs: exec.durationMs,
+      snapshotSave: await this.deriveSnapshotSave(exec),
     };
   }
 
@@ -416,6 +428,73 @@ export class RunsService {
       totalItems,
       totalPages: Math.max(1, Math.ceil(totalItems / pageSize)),
     };
+  }
+
+  // AnD API Group 5 Snapshot §7 Run Extension: reasonCode domain beyond what
+  // the DB already enforces (MISSING_FULL_URL/MISSING_REQUIRED_INPUT from
+  // skipReasonCode; TIMEOUT/DNS_ERROR/TLS_ERROR/CONNECTION_ERROR/
+  // UNKNOWN_EXECUTION_ERROR/HTTP_ERROR from errorReasonCode; PAYLOAD_TOO_LARGE/
+  // UNKNOWN_ERROR from SnapshotSaveAttempt.errorReasonCode) is left "chờ
+  // API/Run mapping" by the doc. NON_2XX_RESPONSE/INTERRUPTED/NOT_EXECUTED
+  // below are Claude-derived additions — the real gap they cover is
+  // executionOutcome RESPONSE_RECEIVED with a 3xx httpStatus, which Snapshot
+  // eligibility (strict 200-299, REQ-SNP-002) never even attempts to save.
+  // `message` is intentionally never populated here: SnapshotSaveAttempt's
+  // UNKNOWN_ERROR errorDetail is raw err.message text (unlike
+  // executionError.message, which is the already-sanitized errorMessageSafe
+  // column), so surfacing it as an API-facing "safe description" would risk
+  // leaking internal error text. Flagged to the user, not silently assumed.
+  private async deriveSnapshotSave(exec: RunExecution): Promise<SnapshotSaveInfo | null> {
+    const snapshot = await this.prisma.snapshot.findUnique({
+      where: { runExecutionId: exec.runExecutionId },
+      select: { snapshotId: true },
+    });
+    if (snapshot) {
+      return { state: "SAVED", snapshotId: snapshot.snapshotId };
+    }
+
+    if (exec.executionStatus === "PENDING" || exec.executionStatus === "RUNNING") {
+      // Save has not even been attempted yet — nothing to report.
+      return null;
+    }
+    if (exec.executionStatus === "SKIPPED") {
+      return { state: "NOT_CREATED", reasonCode: exec.skipReasonCode ?? undefined };
+    }
+    if (exec.executionStatus === "INTERRUPTED") {
+      return { state: "NOT_CREATED", reasonCode: "INTERRUPTED" };
+    }
+    if (exec.executionStatus === "NOT_EXECUTED") {
+      return { state: "NOT_CREATED", reasonCode: "NOT_EXECUTED" };
+    }
+
+    // executionStatus === "COMPLETED" from here on.
+    if (exec.executionOutcome === "RUN_ERROR") {
+      return { state: "NOT_CREATED", reasonCode: exec.errorReasonCode ?? undefined };
+    }
+    if (exec.executionOutcome === "RESPONSE_RECEIVED") {
+      if (exec.httpStatus === null || exec.httpStatus < 200 || exec.httpStatus >= 300) {
+        return { state: "NOT_CREATED", reasonCode: "NON_2XX_RESPONSE" };
+      }
+
+      // Eligible (2xx) but no Snapshot row — check what the save attempt says.
+      const attempt = await this.prisma.snapshotSaveAttempt.findFirst({
+        where: { runExecutionId: exec.runExecutionId },
+        orderBy: { attemptedAt: "desc" },
+      });
+      if (!attempt) {
+        // Attempt log itself may not have been written (e.g. DB unavailable
+        // at that moment) — must not be conflated with a confirmed error.
+        return { state: "UNKNOWN" };
+      }
+      if (attempt.attemptStatus === "FAILED") {
+        return { state: "SAVE_FAILED", reasonCode: attempt.errorReasonCode ?? undefined };
+      }
+      // attemptStatus SUCCEEDED but no Snapshot row is a contradiction the
+      // write path should never produce (both created in one transaction).
+      return { state: "UNKNOWN" };
+    }
+
+    return { state: "UNKNOWN" };
   }
 
   private computeSummary(executions: RunExecution[]): RunExecutionSummary {
