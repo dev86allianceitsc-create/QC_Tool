@@ -195,3 +195,4 @@ DIFFERENT mới xuất hiện control “Đánh dấu thay đổi”. Mặc đ�
 | Version | Date | Change |
 | --- | --- | --- |
 | 0.1 | 2026-09-24 | UI AnD và prototype cho Group 6/7, trace requirement/API, chưa freeze |
+| 0.2 | 2026-09-27 | Triển khai đủ 7 flow trong `apps/web`, nối API thực (không mock). Đối chiếu 5 mục §9 cần đối chiếu trước freeze: (1) pagination Comparison theo `hasMore`, không có `totalPages`; (2) mọi finding vẫn `isRedacted:true` — chưa có raw/binary Detail, OUT-002-10/CMP-015-10 giữ nguyên trạng thái chưa hoàn tất; (3) giữ theme token `#111827` đã ship, không đổi sang `#C41230` của prototype; (4) Create Comparison dùng `Modal`+`TabBar` có sẵn, không dựng Drawer mới; (5) không gate quyền view/compare/retry/classify theo USR/AUTH ở client — theo đúng convention hiện có của `apps/web`, để 401/403/404 từ server tự xử lý. Copy tiếng Anh theo convention màn hình đã ship (Snapshot/Run/Execution), không giữ nguyên tiếng Việt của bản 0.1. |

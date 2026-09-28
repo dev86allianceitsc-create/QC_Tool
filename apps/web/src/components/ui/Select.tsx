@@ -1,12 +1,20 @@
-import type { ReactNode, SelectHTMLAttributes } from "react";
+import type { ReactNode, SelectHTMLAttributes } from "react"
 
 export function Select({
   label,
+
   error,
+
   children,
+
   className = "",
+
   ...rest
-}: SelectHTMLAttributes<HTMLSelectElement> & { label?: string; error?: string | null; children: ReactNode }) {
+}: SelectHTMLAttributes<HTMLSelectElement> & {
+  label?: string
+  error?: string | null
+  children: ReactNode
+}) {
   const field = (
     <select
       {...rest}
@@ -14,13 +22,17 @@ export function Select({
     >
       {children}
     </select>
-  );
-  if (!label) return field;
+  )
+
+  if (!label) return field
+
   return (
     <label className="block">
-      <span className="mb-1.5 block text-xs font-semibold text-gray-900">{label}</span>
+      <span className="mb-1.5 block text-xs font-semibold text-gray-900">
+        {label}
+      </span>
       {field}
       {error && <span className="mt-1 block text-xs text-error">{error}</span>}
     </label>
-  );
+  )
 }

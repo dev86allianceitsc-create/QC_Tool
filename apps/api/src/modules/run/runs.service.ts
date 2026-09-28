@@ -74,6 +74,20 @@ export interface SnapshotSaveInfo {
   message?: string;
 }
 
+// Group 6/7 Comparison AnD API v0.2 requirement "extend existing Run/Execution
+// contract to expose baseline/availability/Comparison link, without a
+// duplicate public Run endpoint" — same additive-optional-field precedent as
+// snapshotSave above (AnD API Group 5 Snapshot §7). baselineSnapshotId/
+// reasonCode are read straight from the Execution's own already-locked
+// columns (never recomputed); comparisonId is populated only once the
+// AUTO_EXECUTION Comparison this Execution sourced actually exists (it may
+// not yet, e.g. Comparison creation happens after Snapshot save completes).
+export interface ComparisonAvailabilityInfo {
+  baselineSnapshotId: string | null;
+  reasonCode: string | null;
+  comparisonId: string | null;
+}
+
 export interface RunExecutionDetail {
   runId: string;
   executionId: string;
@@ -110,6 +124,9 @@ export interface RunExecutionDetail {
   // · Approved proposal) — backward-compatible optional field, added without
   // touching executionOutcome/httpStatus above. See deriveSnapshotSave.
   snapshotSave: SnapshotSaveInfo | null;
+  // Group 6/7 Comparison AnD API v0.2 Run-extension requirement — see
+  // ComparisonAvailabilityInfo doc comment. See deriveComparisonAvailability.
+  comparisonAvailability: ComparisonAvailabilityInfo | null;
 }
 
 export interface ApiRunExecutionListItem {
@@ -380,6 +397,7 @@ export class RunsService {
       endedAt: exec.endedAt,
       durationMs: exec.durationMs,
       snapshotSave: await this.deriveSnapshotSave(exec),
+      comparisonAvailability: await this.deriveComparisonAvailability(exec),
     };
   }
 
@@ -495,6 +513,29 @@ export class RunsService {
     }
 
     return { state: "UNKNOWN" };
+  }
+
+  // baselineSnapshotId/reasonCode come straight from the Execution row — set
+  // once, before dispatch, never reselected (Comparison AnD Section 4.1).
+  // comparisonId looks up the AUTO_EXECUTION Comparison keyed by this
+  // Execution's unique sourceExecutionId; null until/unless that Comparison
+  // has actually been created (e.g. still pending Snapshot save, or no
+  // baseline/target was ever available).
+  private async deriveComparisonAvailability(exec: RunExecution): Promise<ComparisonAvailabilityInfo | null> {
+    if (exec.executionStatus !== "COMPLETED" && exec.executionStatus !== "RUNNING") {
+      return null;
+    }
+
+    const comparison = await this.prisma.comparison.findUnique({
+      where: { sourceExecutionId: exec.runExecutionId },
+      select: { comparisonId: true },
+    });
+
+    return {
+      baselineSnapshotId: exec.baselineSnapshotId,
+      reasonCode: exec.comparisonAvailabilityReasonCode,
+      comparisonId: comparison?.comparisonId ?? null,
+    };
   }
 
   private computeSummary(executions: RunExecution[]): RunExecutionSummary {

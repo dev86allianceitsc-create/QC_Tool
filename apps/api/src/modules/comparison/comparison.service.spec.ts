@@ -5,6 +5,8 @@ import {
   BaselineSelectionInput,
   ComparisonFindingInput,
   ComparisonService,
+  CreateChainInput,
+  ManualComparisonInput,
   RecordClassificationInput,
 } from "./comparison.service";
 import { DEFAULT_APPLIED_RULE_MANIFEST } from "./comparison.constants";
@@ -40,6 +42,28 @@ function autoComparisonInput(overrides: Partial<AutomaticComparisonInput> = {}):
   };
 }
 
+function manualComparisonInput(overrides: Partial<ManualComparisonInput> = {}): ManualComparisonInput {
+  return {
+    scope: { projectId: "p-1", apiId: "a-1", environmentId: "e-1" },
+    baselineSnapshotId: "snap-baseline",
+    targetSnapshotId: "snap-target",
+    sourceKind: "MANUAL_PAIR",
+    requestedByUserId: "u-1",
+    note: null,
+    ...overrides,
+  };
+}
+
+function createChainInput(overrides: Partial<CreateChainInput> = {}): CreateChainInput {
+  return {
+    scope: { projectId: "p-1", apiId: "a-1", environmentId: "e-1" },
+    requestedByUserId: "u-1",
+    orderedSnapshotIds: ["snap-1", "snap-2", "snap-3"],
+    note: null,
+    ...overrides,
+  };
+}
+
 function classificationInput(overrides: Partial<RecordClassificationInput> = {}): RecordClassificationInput {
   return {
     classification: "UNEXPECTED",
@@ -54,6 +78,7 @@ describe("ComparisonService", () => {
   function makeService() {
     const tx = {
       comparison: { create: jest.fn().mockResolvedValue({ comparisonId: "cmp-1" }) },
+      comparisonChain: { create: jest.fn().mockResolvedValue({ comparisonChainId: "chain-1" }) },
       comparisonAttempt: {
         create: jest.fn().mockResolvedValue({ comparisonAttemptId: "att-1", attemptNumber: 1 }),
         findFirst: jest.fn().mockResolvedValue(null),
@@ -76,8 +101,9 @@ describe("ComparisonService", () => {
       snapshot: { findFirst: jest.fn().mockResolvedValue(null) },
       comparisonClassificationEvent: { findFirst: jest.fn().mockResolvedValue(null) },
     };
-    const service = new ComparisonService(prisma as never);
-    return { service, prisma, tx };
+    const auditWriter = { record: jest.fn().mockResolvedValue(undefined) };
+    const service = new ComparisonService(prisma as never, auditWriter as never);
+    return { service, prisma, tx, auditWriter };
   }
 
   describe("selectBaselineSnapshot", () => {
@@ -180,6 +206,144 @@ describe("ComparisonService", () => {
       prisma.$transaction.mockRejectedValueOnce(new Error("connection reset"));
 
       await expect(service.tryCreateAutomaticComparison(autoComparisonInput())).rejects.toThrow("connection reset");
+    });
+  });
+
+  describe("createManualComparison", () => {
+    it("creates a Comparison and a QUEUED first attempt, and audits COMPARISON_CREATED, for a MANUAL_PAIR request", async () => {
+      const { service, tx, auditWriter } = makeService();
+
+      const result = await service.createManualComparison(manualComparisonInput());
+
+      expect(tx.comparison.create).toHaveBeenCalledWith({
+        data: {
+          projectId: "p-1",
+          apiId: "a-1",
+          environmentId: "e-1",
+          baselineSnapshotId: "snap-baseline",
+          targetSnapshotId: "snap-target",
+          sourceKind: "MANUAL_PAIR",
+          requestedByUserId: "u-1",
+          comparisonChainId: null,
+          pairOrdinal: null,
+          note: null,
+        },
+      });
+      expect(tx.comparisonAttempt.create).toHaveBeenCalledWith({
+        data: { comparisonId: "cmp-1", attemptNumber: 1, processingStatus: "QUEUED", appliedRuleManifest: DEFAULT_APPLIED_RULE_MANIFEST },
+      });
+      expect(auditWriter.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventType: "COMPARISON_CREATED",
+          result: "SUCCESS",
+          actorUserId: "u-1",
+          targetType: "COMPARISON",
+          targetId: "cmp-1",
+          projectId: "p-1",
+          afterData: { sourceKind: "MANUAL_PAIR", baselineSnapshotId: "snap-baseline", targetSnapshotId: "snap-target" },
+        }),
+        tx,
+      );
+      expect(result).toEqual({ comparisonId: "cmp-1", comparisonAttemptId: "att-1", queued: true });
+    });
+
+    it("creates a BLOCKED/SNAPSHOT_INVALIDATED attempt (queued: false) when the target Snapshot is invalidated, but still audits creation for a BASELINE_LATEST request", async () => {
+      const { service, tx, auditWriter } = makeService();
+      tx.snapshotInvalidation.findUnique.mockImplementation((args: { where: { snapshotId: string } }) =>
+        Promise.resolve(args.where.snapshotId === "snap-target" ? { invalidationId: "inv-1" } : null),
+      );
+
+      const result = await service.createManualComparison(manualComparisonInput({ sourceKind: "BASELINE_LATEST" }));
+
+      expect(tx.comparisonAttempt.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          processingStatus: "BLOCKED",
+          stoppedAtGate: "ELIGIBILITY",
+          reasonCode: "SNAPSHOT_INVALIDATED",
+        }),
+      });
+      expect(result.queued).toBe(false);
+      expect(auditWriter.record).toHaveBeenCalledWith(expect.objectContaining({ eventType: "COMPARISON_CREATED" }), tx);
+    });
+  });
+
+  describe("createComparisonChain", () => {
+    it("creates one ComparisonChain and one Comparison+QUEUED attempt per adjacent pair, then audits COMPARISON_CHAIN_CREATED exactly once", async () => {
+      const { service, tx, auditWriter } = makeService();
+
+      const result = await service.createComparisonChain(createChainInput({ orderedSnapshotIds: ["s-1", "s-2", "s-3"] }));
+
+      expect(tx.comparisonChain.create).toHaveBeenCalledWith({
+        data: { projectId: "p-1", apiId: "a-1", environmentId: "e-1", requestedByUserId: "u-1", note: null },
+      });
+      expect(tx.comparison.create).toHaveBeenCalledTimes(2);
+      expect(tx.comparison.create).toHaveBeenNthCalledWith(1, {
+        data: expect.objectContaining({
+          baselineSnapshotId: "s-1",
+          targetSnapshotId: "s-2",
+          sourceKind: "CHAIN_PAIR",
+          comparisonChainId: "chain-1",
+          pairOrdinal: 1,
+        }),
+      });
+      expect(tx.comparison.create).toHaveBeenNthCalledWith(2, {
+        data: expect.objectContaining({
+          baselineSnapshotId: "s-2",
+          targetSnapshotId: "s-3",
+          sourceKind: "CHAIN_PAIR",
+          comparisonChainId: "chain-1",
+          pairOrdinal: 2,
+        }),
+      });
+      expect(auditWriter.record).toHaveBeenCalledTimes(1);
+      expect(auditWriter.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventType: "COMPARISON_CHAIN_CREATED",
+          targetType: "COMPARISON_CHAIN",
+          targetId: "chain-1",
+          projectId: "p-1",
+          afterData: { selectedSnapshotCount: 3, pairCount: 2 },
+        }),
+        tx,
+      );
+      expect(result).toEqual({
+        comparisonChainId: "chain-1",
+        selectedSnapshotCount: 3,
+        pairCount: 2,
+        attemptsToQueue: ["att-1", "att-1"],
+      });
+    });
+
+    it("keeps an invalidated mid-chain Snapshot in position — both pairs touching it come back BLOCKED, never skipped", async () => {
+      const { service, tx } = makeService();
+      tx.snapshotInvalidation.findUnique.mockImplementation((args: { where: { snapshotId: string } }) =>
+        Promise.resolve(args.where.snapshotId === "s-2" ? { invalidationId: "inv-1" } : null),
+      );
+
+      const result = await service.createComparisonChain(createChainInput({ orderedSnapshotIds: ["s-1", "s-2", "s-3"] }));
+
+      expect(tx.comparisonAttempt.create).toHaveBeenNthCalledWith(1, {
+        data: expect.objectContaining({ processingStatus: "BLOCKED", reasonCode: "SNAPSHOT_INVALIDATED" }),
+      });
+      expect(tx.comparisonAttempt.create).toHaveBeenNthCalledWith(2, {
+        data: expect.objectContaining({ processingStatus: "BLOCKED", reasonCode: "SNAPSHOT_INVALIDATED" }),
+      });
+      expect(result.attemptsToQueue).toEqual([]);
+    });
+
+    it("only queues the attempts for pairs that are not blocked, leaving the rest of a longer chain independent", async () => {
+      const { service, tx } = makeService();
+      let call = 0;
+      tx.comparisonAttempt.create.mockImplementation(() => Promise.resolve({ comparisonAttemptId: `att-${++call}`, attemptNumber: 1 }));
+      tx.snapshotInvalidation.findUnique.mockImplementation((args: { where: { snapshotId: string } }) =>
+        Promise.resolve(args.where.snapshotId === "s-3" ? { invalidationId: "inv-1" } : null),
+      );
+
+      const result = await service.createComparisonChain(createChainInput({ orderedSnapshotIds: ["s-1", "s-2", "s-3", "s-4"] }));
+
+      expect(result.selectedSnapshotCount).toBe(4);
+      expect(result.pairCount).toBe(3);
+      expect(result.attemptsToQueue).toEqual(["att-1"]);
     });
   });
 
@@ -295,6 +459,48 @@ describe("ComparisonService", () => {
       expect(tx.comparisonFinding.create).toHaveBeenNthCalledWith(1, { data: expect.objectContaining({ phase: "INPUT", findingOrdinal: 0, ruleCode: "R1" }) });
       expect(tx.comparisonFinding.create).toHaveBeenNthCalledWith(2, { data: expect.objectContaining({ phase: "INPUT", findingOrdinal: 1, ruleCode: "R2" }) });
       expect(tx.comparisonFinding.create).toHaveBeenNthCalledWith(3, { data: expect.objectContaining({ phase: "OUTPUT", findingOrdinal: 0, ruleCode: "R3" }) });
+    });
+  });
+
+  describe("blockAttempt", () => {
+    it("does not create finding rows when none are provided", async () => {
+      const { service, tx } = makeService();
+      tx.comparisonAttempt.findUnique.mockResolvedValue({ comparisonAttemptId: "att-1", processingStatus: "QUEUED" });
+
+      await expect(service.blockAttempt("att-1", { stoppedAtGate: "ELIGIBILITY", reasonCode: "ENVIRONMENT_MISMATCH" })).resolves.toEqual({ ok: true });
+
+      expect(tx.comparisonFinding.create).not.toHaveBeenCalled();
+    });
+
+    it("persists INPUT-phase finding rows when provided, with ordinals starting at 0", async () => {
+      const { service, tx } = makeService();
+      tx.comparisonAttempt.findUnique.mockResolvedValue({ comparisonAttemptId: "att-1", processingStatus: "QUEUED" });
+      const findings: ComparisonFindingInput[] = [
+        { phase: "INPUT", component: "METHOD", differenceKind: "VALUE", ruleCode: "METHOD_MISMATCH", safeSummary: "Method differs (A=GET, B=POST)" },
+        { phase: "INPUT", component: "REQUEST_HEADER", differenceKind: "VALUE", ruleCode: "HEADER_VALUE", locationPath: "accept" },
+      ];
+
+      await service.blockAttempt("att-1", {
+        stoppedAtGate: "INPUT",
+        reasonCode: "INPUT_MISMATCH",
+        reasonDetailSafe: "Method differs (A=GET, B=POST)",
+        inputCheckOutcome: "MISMATCH",
+        findings,
+      });
+
+      expect(tx.comparisonFinding.create).toHaveBeenCalledTimes(2);
+      expect(tx.comparisonFinding.create).toHaveBeenNthCalledWith(1, { data: expect.objectContaining({ comparisonAttemptId: "att-1", phase: "INPUT", findingOrdinal: 0, ruleCode: "METHOD_MISMATCH" }) });
+      expect(tx.comparisonFinding.create).toHaveBeenNthCalledWith(2, { data: expect.objectContaining({ phase: "INPUT", findingOrdinal: 1, ruleCode: "HEADER_VALUE", locationPath: "accept" }) });
+    });
+
+    it("never persists finding rows when the attempt is not active — the terminal guard is checked first", async () => {
+      const { service, tx } = makeService();
+      tx.comparisonAttempt.findUnique.mockResolvedValue({ comparisonAttemptId: "att-1", processingStatus: "BLOCKED" });
+      const findings: ComparisonFindingInput[] = [{ phase: "INPUT", component: "METHOD", differenceKind: "VALUE", ruleCode: "METHOD_MISMATCH" }];
+
+      await expect(service.blockAttempt("att-1", { stoppedAtGate: "INPUT", reasonCode: "INPUT_MISMATCH", findings })).resolves.toEqual({ ok: false, code: "ATTEMPT_NOT_ACTIVE" });
+
+      expect(tx.comparisonFinding.create).not.toHaveBeenCalled();
     });
   });
 

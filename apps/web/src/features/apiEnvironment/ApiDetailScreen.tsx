@@ -1,118 +1,242 @@
-import { useEffect, useMemo, useState } from "react";
-import { ApiError } from "../../services/api-client";
-import { ConfirmDialog } from "../projects/ConfirmDialog";
-import type { Role } from "../projects/projects.types";
-import { AUTH_TYPE_LABELS } from "./authentication.util";
-import { ConfigurationArea } from "./ConfigurationArea";
-import { CreateEditApiModal } from "./CreateEditApiModal";
-import { InactiveBanner } from "./InactiveBanner";
-import { RunApiArea } from "./RunApiArea";
-import { RunHistoryArea } from "./RunHistoryArea";
-import { useApiDetail } from "./useApiDetail";
-import { useApiEnvironmentConfigs } from "./useApiEnvironmentConfigs";
-import { useAuthentication } from "./useAuthentication";
-import { useEnvironmentList } from "./useEnvironmentList";
-import { useRequestInput } from "./useRequestInput";
-import { useSingleRunExecution } from "./useSingleRunExecution";
-import { Button } from "../../components/ui/Button";
-import { HttpMethodBadge } from "../../components/ui/HttpMethodBadge";
-import type { StepReadiness } from "../../components/ui/StepSidebar";
-import { TabBar } from "../../components/ui/TabBar";
+import { useEffect, useMemo, useState } from "react"
 
-type ApiWorkspaceArea = "configuration" | "run" | "history";
+import { ApiError } from "../../services/api-client"
+
+import { ConfirmDialog } from "../projects/ConfirmDialog"
+
+import type { Role } from "../projects/projects.types"
+
+import { AUTH_TYPE_LABELS } from "./authentication.util"
+
+import { ConfigurationArea } from "./ConfigurationArea"
+
+import { CreateEditApiModal } from "./CreateEditApiModal"
+
+import { InactiveBanner } from "./InactiveBanner"
+
+import { RunApiArea } from "./RunApiArea"
+
+import { RunHistoryArea } from "./RunHistoryArea"
+
+import { useApiDetail } from "./useApiDetail"
+
+import { useApiEnvironmentConfigs } from "./useApiEnvironmentConfigs"
+
+import { useAuthentication } from "./useAuthentication"
+
+import { useEnvironmentList } from "./useEnvironmentList"
+
+import { useRequestInput } from "./useRequestInput"
+
+import { useSingleRunExecution } from "./useSingleRunExecution"
+
+import { Button } from "../../components/ui/Button"
+
+import { HttpMethodBadge } from "../../components/ui/HttpMethodBadge"
+
+import type { StepReadiness } from "../../components/ui/StepSidebar"
+
+import { TabBar } from "../../components/ui/TabBar"
+
+type ApiWorkspaceArea = "configuration" | "run" | "history"
 
 const WORKSPACE_TABS: { key: ApiWorkspaceArea; label: string }[] = [
   { key: "configuration", label: "Configuration" },
+
   { key: "run", label: "Run API" },
+
   { key: "history", label: "Run History" },
-];
+]
 
 // UI correction — Configuration / Run API / Run History as 3 horizontal,
+
 // same-level tabs below the API identity header (not a single toggle
+
 // button, and Run History is its own tab, never nested under Execute).
+
 // This screen stays a thin shell: header (breadcrumb, Method/Path,
+
 // Environment selector, Edit/Delete) plus the TabBar plus whichever area is
+
 // active. All data fetching and the unsaved-changes guard stay here so
+
 // state survives switching between areas; ConfigurationArea/RunApiArea only
+
 // render their own step content from props — the underlying
+
 // hooks/components (useRequestInput, useApiEnvironmentConfigs,
+
 // useAuthentication, RequestInputTab, AuthenticationTab) are unchanged.
+
 export function ApiDetailScreen({
   user,
+
   projectId,
+
   projectStatus,
+
   apiId,
+
   accessToken,
+
   onBack,
+
   onViewExecution,
+
   onViewAllRuns,
+
   onSessionExpired,
+
   onAccessDenied,
+
   onBackToBatch,
 }: {
-  user: { email: string; role: Role };
-  projectId: string;
-  projectStatus: "ACTIVE" | "INACTIVE";
-  apiId: string;
-  accessToken: string | null;
-  onBack: () => void;
-  onViewExecution: (runId: string, executionId: string) => void;
-  onViewAllRuns: () => void;
-  onSessionExpired: () => void;
-  onAccessDenied: () => void;
-  onBackToBatch?: () => void;
+  user: { email: string; role: Role }
+
+  projectId: string
+
+  projectStatus: "ACTIVE" | "INACTIVE"
+
+  apiId: string
+
+  accessToken: string | null
+
+  onBack: () => void
+
+  onViewExecution: (runId: string, executionId: string) => void
+
+  onViewAllRuns: () => void
+
+  onSessionExpired: () => void
+
+  onAccessDenied: () => void
+
+  onBackToBatch?: () => void
 }) {
-  const isAdmin = user.role === "ADMIN";
-  const projectInactive = projectStatus === "INACTIVE";
+  const isAdmin = user.role === "ADMIN"
 
-  const { api, loading, error, refetch, updateApi, deleteApi } = useApiDetail(projectId, apiId, accessToken, onSessionExpired, onAccessDenied);
-  const { environments } = useEnvironmentList(projectId, accessToken, onSessionExpired, onAccessDenied);
-  const { configs, loading: configsLoading, putConfig, refetch: refetchConfigs } = useApiEnvironmentConfigs(projectId, apiId, accessToken, onSessionExpired, onAccessDenied);
-  const requestInput = useRequestInput(projectId, apiId, accessToken, onSessionExpired, onAccessDenied);
+  const projectInactive = projectStatus === "INACTIVE"
 
-  const [area, setArea] = useState<ApiWorkspaceArea>("configuration");
-  const [showEditModal, setShowEditModal] = useState(false);
-  const [editError, setEditError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-  const [deleteError, setDeleteError] = useState<string | null>(null);
-  const [selectedEnvironmentId, setSelectedEnvironmentId] = useState<string | null>(null);
-  const [urlDraft, setUrlDraft] = useState<Record<string, string>>({});
-  const [savingUrl, setSavingUrl] = useState(false);
-  const [urlError, setUrlError] = useState<string | null>(null);
-  const [urlSaved, setUrlSaved] = useState(false);
-  const [requestInputDirty, setRequestInputDirty] = useState(false);
-  const [authenticationDirty, setAuthenticationDirty] = useState(false);
-  const [pendingNav, setPendingNav] = useState<(() => void) | null>(null);
+  const { api, loading, error, refetch, updateApi, deleteApi } = useApiDetail(
+    projectId,
+    apiId,
+    accessToken,
+    onSessionExpired,
+    onAccessDenied,
+  )
 
-  const authentication = useAuthentication(projectId, apiId, selectedEnvironmentId, accessToken, onSessionExpired, onAccessDenied);
-  const runExecution = useSingleRunExecution(projectId, apiId, selectedEnvironmentId, accessToken, onSessionExpired, onAccessDenied);
+  const { environments } = useEnvironmentList(
+    projectId,
+    accessToken,
+    onSessionExpired,
+    onAccessDenied,
+  )
+
+  const {
+    configs,
+    loading: configsLoading,
+    putConfig,
+    refetch: refetchConfigs,
+  } = useApiEnvironmentConfigs(
+    projectId,
+    apiId,
+    accessToken,
+    onSessionExpired,
+    onAccessDenied,
+  )
+
+  const requestInput = useRequestInput(
+    projectId,
+    apiId,
+    accessToken,
+    onSessionExpired,
+    onAccessDenied,
+  )
+
+  const [area, setArea] = useState<ApiWorkspaceArea>("configuration")
+
+  const [showEditModal, setShowEditModal] = useState(false)
+
+  const [editError, setEditError] = useState<string | null>(null)
+
+  const [saving, setSaving] = useState(false)
+
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+
+  const [selectedEnvironmentId, setSelectedEnvironmentId] =
+    useState<string | null>(null)
+
+  const [urlDraft, setUrlDraft] = useState<Record<string, string>>({})
+
+  const [savingUrl, setSavingUrl] = useState(false)
+
+  const [urlError, setUrlError] = useState<string | null>(null)
+
+  const [urlSaved, setUrlSaved] = useState(false)
+
+  const [requestInputDirty, setRequestInputDirty] = useState(false)
+
+  const [authenticationDirty, setAuthenticationDirty] = useState(false)
+
+  const [pendingNav, setPendingNav] = useState<(() => void) | null>(null)
+
+  const authentication = useAuthentication(
+    projectId,
+    apiId,
+    selectedEnvironmentId,
+    accessToken,
+    onSessionExpired,
+    onAccessDenied,
+  )
+
+  const runExecution = useSingleRunExecution(
+    projectId,
+    apiId,
+    selectedEnvironmentId,
+    accessToken,
+    onSessionExpired,
+    onAccessDenied,
+  )
 
   // INACTIVE Environments are not a valid Execution Target: an Admin
+
   // reactivates them from the Environments list, not from this per-API
+
   // screen, so here they must be neither shown nor selectable. Everything
+
   // in this screen that picks or lists "the Environments for this API"
+
   // reads activeEnvironments, never the raw fetch result.
-  const activeEnvironments = useMemo(() => environments.filter((e) => e.environmentStatus === "ACTIVE"), [environments]);
+
+  const activeEnvironments = useMemo(
+    () => environments.filter((e) => e.environmentStatus === "ACTIVE"),
+    [environments],
+  )
 
   useEffect(() => {
-    if (activeEnvironments.length === 0) return;
-    const stillActive = activeEnvironments.some((e) => e.environmentId === selectedEnvironmentId);
+    if (activeEnvironments.length === 0) return
+
+    const stillActive = activeEnvironments.some(
+      (e) => e.environmentId === selectedEnvironmentId,
+    )
+
     if (!stillActive) {
-      setSelectedEnvironmentId(activeEnvironments[0].environmentId);
+      setSelectedEnvironmentId(activeEnvironments[0].environmentId)
     }
-  }, [activeEnvironments, selectedEnvironmentId]);
+  }, [activeEnvironments, selectedEnvironmentId])
 
   useEffect(() => {
-    setUrlSaved(false);
-  }, [selectedEnvironmentId]);
+    setUrlSaved(false)
+  }, [selectedEnvironmentId])
 
   if (loading) {
     return (
       <div className="p-5">
         <p>Loading API...</p>
       </div>
-    );
+    )
   }
 
   if (error || !api) {
@@ -128,82 +252,131 @@ export function ApiDetailScreen({
           </Button>
         </div>
       </div>
-    );
+    )
   }
 
-  const currentApi = api;
-  const selectedEnvironment = activeEnvironments.find((e) => e.environmentId === selectedEnvironmentId) ?? null;
-  const config = selectedEnvironment ? configs.find((c) => c.environmentId === selectedEnvironment.environmentId) ?? null : null;
-  const environmentInactive = selectedEnvironment?.environmentStatus === "INACTIVE";
-  const readOnlyConfig = projectInactive || environmentInactive;
+  const currentApi = api
+
+  const selectedEnvironment =
+    activeEnvironments.find((e) => e.environmentId === selectedEnvironmentId) ??
+    null
+
+  const config = selectedEnvironment
+    ? (configs.find(
+        (c) => c.environmentId === selectedEnvironment.environmentId,
+      ) ?? null)
+    : null
+
+  const environmentInactive =
+    selectedEnvironment?.environmentStatus === "INACTIVE"
+
+  const readOnlyConfig = projectInactive || environmentInactive
 
   // UX-01: switching area/step (or, for Authentication, switching
+
   // Environment) away from an unsaved draft would silently drop it (Full URL
+
   // drafts live in this screen's own state and survive navigation, so they
+
   // need no such guard). No reusable "unsaved changes" mechanism exists
+
   // elsewhere in the app yet, so this guard is scoped to this screen's own
+
   // internal navigation only.
+
   function guardedNavigate(action: () => void) {
     if (requestInputDirty || authenticationDirty) {
-      setPendingNav(() => action);
+      setPendingNav(() => action)
     } else {
-      action();
+      action()
     }
   }
 
   function confirmPendingNav() {
-    pendingNav?.();
-    setPendingNav(null);
+    pendingNav?.()
+
+    setPendingNav(null)
   }
 
-  async function handleSaveEdit(input: { apiName: string; httpMethod: string; path: string; description: string | null }) {
-    setSaving(true);
-    setEditError(null);
+  async function handleSaveEdit(input: {
+    apiName: string
+    httpMethod: string
+    path: string
+    description: string | null
+  }) {
+    setSaving(true)
+
+    setEditError(null)
+
     try {
-      await updateApi(input);
-      setShowEditModal(false);
+      await updateApi(input)
+
+      setShowEditModal(false)
     } catch (err) {
-      setEditError(err instanceof ApiError ? err.message : "Unable to save API.");
+      setEditError(
+        err instanceof ApiError ? err.message : "Unable to save API.",
+      )
     } finally {
-      setSaving(false);
+      setSaving(false)
     }
   }
 
   async function handleDelete() {
-    setDeleteError(null);
+    setDeleteError(null)
+
     try {
-      await deleteApi();
-      setShowDeleteConfirm(false);
-      onBack();
+      await deleteApi()
+
+      setShowDeleteConfirm(false)
+
+      onBack()
     } catch (err) {
-      setDeleteError(err instanceof ApiError ? err.message : "Unable to delete API.");
+      setDeleteError(
+        err instanceof ApiError ? err.message : "Unable to delete API.",
+      )
     }
   }
 
   // The Environment-config list carries its own credentialStatus (derived
+
   // server-side from the same Authentication Configuration rows), and it
+
   // feeds the step readiness badges and the Execution Target readiness card.
+
   // It is fetched once per API, so every Authentication mutation has to
+
   // refresh it or those places keep showing the pre-mutation status.
+
   async function withConfigRefresh<T>(mutate: () => Promise<T>): Promise<T> {
-    const result = await mutate();
-    await refetchConfigs();
-    return result;
+    const result = await mutate()
+
+    await refetchConfigs()
+
+    return result
   }
 
   async function handleSaveUrl() {
-    if (!selectedEnvironment) return;
-    const value = urlDraft[selectedEnvironment.environmentId] ?? config?.fullUrl ?? "";
-    setSavingUrl(true);
-    setUrlError(null);
-    setUrlSaved(false);
+    if (!selectedEnvironment) return
+
+    const value =
+      urlDraft[selectedEnvironment.environmentId] ?? config?.fullUrl ?? ""
+
+    setSavingUrl(true)
+
+    setUrlError(null)
+
+    setUrlSaved(false)
+
     try {
-      await putConfig(selectedEnvironment.environmentId, value.trim());
-      setUrlSaved(true);
+      await putConfig(selectedEnvironment.environmentId, value.trim())
+
+      setUrlSaved(true)
     } catch (err) {
-      setUrlError(err instanceof ApiError ? err.message : "Unable to save Full URL.");
+      setUrlError(
+        err instanceof ApiError ? err.message : "Unable to save Full URL.",
+      )
     } finally {
-      setSavingUrl(false);
+      setSavingUrl(false)
     }
   }
 
@@ -212,39 +385,71 @@ export function ApiDetailScreen({
     (requestInput.definition.pathParameters.length > 0 ||
       requestInput.definition.queryParameters.length > 0 ||
       requestInput.definition.headerParameters.length > 0 ||
-      requestInput.definition.requestBody !== null);
+      requestInput.definition.requestBody !== null)
+
   // "not_configured" (not "not required") — an empty Request Input has no
+
   // backing business rule saying the API needs no input; it may simply not
+
   // be filled in yet, so the badge must not claim more than that fact.
-  const requestInputReadiness: StepReadiness | undefined = requestInput.definition ? (requestInputHasData ? "configured" : "not_configured") : undefined;
+
+  const requestInputReadiness: StepReadiness | undefined =
+    requestInput.definition
+      ? requestInputHasData
+        ? "configured"
+        : "not_configured"
+      : undefined
 
   const executionTargetReadiness: StepReadiness =
-    activeEnvironments.length === 0 ? "not_available" : config?.urlStatus === "CONFIGURED" ? "configured" : "needs_attention";
+    activeEnvironments.length === 0
+      ? "not_available"
+      : config?.urlStatus === "CONFIGURED"
+        ? "configured"
+        : "needs_attention"
 
   // CL-3C-01: only an Admin may change the Authentication Type, the Login
+
   // metadata or the credential; Users see the same safe metadata and status
+
   // read-only. Project/Environment INACTIVE freezes it for everyone. The
+
   // reason is stated so a disabled form never looks broken.
+
   const authenticationReadOnlyReason = !isAdmin
     ? "Only an Admin can change the Authentication Type or credential for this API in this Environment."
     : projectInactive
       ? "This Project is INACTIVE — Authentication is view-only until the Project is reactivated."
       : environmentInactive
         ? "This Environment is INACTIVE — Authentication is view-only until the Environment is reactivated."
-        : undefined;
+        : undefined
 
   // Both the Authentication step (per-Environment fetch) and the Environment
+
   // config list carry credentialStatus. Once the step has loaded the live
+
   // configuration for the selected Environment it is the fresher of the
+
   // two, so readiness and the Execution Target card prefer it.
+
   const liveAuthConfig =
-    authentication.config && authentication.config.environmentId === selectedEnvironmentId ? authentication.config : null;
-  const credentialStatus = liveAuthConfig?.credentialStatus ?? config?.credentialStatus ?? null;
-  const authTypeLabel = liveAuthConfig ? AUTH_TYPE_LABELS[liveAuthConfig.authType] : null;
+    authentication.config &&
+    authentication.config.environmentId === selectedEnvironmentId
+      ? authentication.config
+      : null
+
+  const credentialStatus =
+    liveAuthConfig?.credentialStatus ?? config?.credentialStatus ?? null
+
+  const authTypeLabel = liveAuthConfig
+    ? AUTH_TYPE_LABELS[liveAuthConfig.authType]
+    : null
 
   // credentialStatus already collapses NONE→NOT_REQUIRED at the backend, so
+
   // "configured" covers both "no credential needed" and "credential set";
+
   // "needs_attention" is only the transient state before configs load.
+
   const authenticationReadiness: StepReadiness =
     activeEnvironments.length === 0
       ? "not_available"
@@ -252,29 +457,51 @@ export function ApiDetailScreen({
         ? "needs_attention"
         : credentialStatus === "NOT_CONFIGURED"
           ? "not_configured"
-          : "configured";
+          : "configured"
 
   // UI-RUN-01: the concrete reasons a Run could not be started for the
+
   // selected Environment. Run execution itself is out of 3C scope — this
+
   // only reports readiness, it never attempts a request.
+
   const runBlockers: string[] = selectedEnvironment
     ? [
         projectInactive ? "The Project is INACTIVE." : null,
+
         environmentInactive ? "The Environment is INACTIVE." : null,
-        !selectedEnvironment.allowRun ? "Allow Run is OFF for this Environment." : null,
-        config?.urlStatus !== "CONFIGURED" ? "The Full URL is not configured for this Environment." : null,
-        credentialStatus === "NOT_CONFIGURED" ? "The credential for the selected Authentication Type is not configured." : null,
+
+        !selectedEnvironment.allowRun
+          ? "Allow Run is OFF for this Environment."
+          : null,
+
+        config?.urlStatus !== "CONFIGURED"
+          ? "The Full URL is not configured for this Environment."
+          : null,
+
+        credentialStatus === "NOT_CONFIGURED"
+          ? "The credential for the selected Authentication Type is not configured."
+          : null,
       ].filter((reason): reason is string => reason !== null)
-    : [];
+    : []
 
   return (
     <div>
-      {projectInactive && <InactiveBanner message="This Project is INACTIVE. This API is view-only until the Project is reactivated." />}
+      {projectInactive && (
+        <InactiveBanner message="This Project is INACTIVE. This API is view-only until the Project is reactivated." />
+      )}
 
       {onBackToBatch && (
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border bg-blue-50 px-6 py-2.5">
-          <span className="text-xs text-gray-700">You're configuring this API for a Batch Run. Make all the changes you need, then head back whenever you're ready.</span>
-          <Button variant="secondary" size="sm" onClick={() => guardedNavigate(onBackToBatch)}>
+          <span className="text-xs text-gray-700">
+            You're configuring this API for a Batch Run. Make all the changes
+            you need, then head back whenever you're ready.
+          </span>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => guardedNavigate(onBackToBatch)}
+          >
             ← Back to Batch Run Preparation
           </Button>
         </div>
@@ -284,7 +511,10 @@ export function ApiDetailScreen({
         <div>
           {!onBackToBatch && (
             <div className="text-xs text-muted">
-              <button onClick={onBack} className="cursor-pointer border-none bg-transparent p-0 text-xs text-gray-700 underline">
+              <button
+                onClick={onBack}
+                className="cursor-pointer border-none bg-transparent p-0 text-xs text-gray-700 underline"
+              >
                 APIs
               </button>
               <span className="mx-1.5">/</span>
@@ -293,7 +523,9 @@ export function ApiDetailScreen({
           )}
           <div className="mt-1.5 flex items-center gap-2">
             <HttpMethodBadge method={currentApi.httpMethod} />
-            <span className="font-mono text-sm text-gray-900">{currentApi.path}</span>
+            <span className="font-mono text-sm text-gray-900">
+              {currentApi.path}
+            </span>
           </div>
         </div>
 
@@ -303,8 +535,11 @@ export function ApiDetailScreen({
               aria-label="Environment"
               value={selectedEnvironmentId ?? ""}
               onChange={(e) => {
-                const nextEnvironmentId = e.target.value;
-                guardedNavigate(() => setSelectedEnvironmentId(nextEnvironmentId));
+                const nextEnvironmentId = e.target.value
+
+                guardedNavigate(() =>
+                  setSelectedEnvironmentId(nextEnvironmentId),
+                )
               }}
               className="rounded-md border border-border px-2.5 py-1.5 text-sm text-gray-900"
             >
@@ -320,8 +555,9 @@ export function ApiDetailScreen({
               <Button
                 variant="secondary"
                 onClick={() => {
-                  setEditError(null);
-                  setShowEditModal(true);
+                  setEditError(null)
+
+                  setShowEditModal(true)
                 }}
               >
                 Edit
@@ -330,8 +566,9 @@ export function ApiDetailScreen({
                 <Button
                   variant="danger"
                   onClick={() => {
-                    setDeleteError(null);
-                    setShowDeleteConfirm(true);
+                    setDeleteError(null)
+
+                    setShowDeleteConfirm(true)
                   }}
                 >
                   Delete
@@ -345,7 +582,9 @@ export function ApiDetailScreen({
       <TabBar
         items={WORKSPACE_TABS}
         activeKey={area}
-        onSelect={(key) => guardedNavigate(() => setArea(key as ApiWorkspaceArea))}
+        onSelect={(key) =>
+          guardedNavigate(() => setArea(key as ApiWorkspaceArea))
+        }
         ariaLabel="API Detail sections"
       />
 
@@ -360,8 +599,9 @@ export function ApiDetailScreen({
           readOnlyConfig={readOnlyConfig}
           urlDraft={urlDraft}
           onUrlDraftChange={(environmentId, value) => {
-            setUrlDraft((prev) => ({ ...prev, [environmentId]: value }));
-            setUrlSaved(false);
+            setUrlDraft((prev) => ({ ...prev, [environmentId]: value }))
+
+            setUrlSaved(false)
           }}
           savingUrl={savingUrl}
           urlError={urlError}
@@ -374,13 +614,25 @@ export function ApiDetailScreen({
           apiId={apiId}
           authentication={{
             config: authentication.config,
+
             loading: authentication.loading,
+
             error: authentication.error,
+
             saving: authentication.saving,
+
             refetch: authentication.refetch,
-            saveConfiguration: (payload) => withConfigRefresh(() => authentication.saveConfiguration(payload)),
-            saveCredential: (payload) => withConfigRefresh(() => authentication.saveCredential(payload)),
-            removeCredential: () => withConfigRefresh(() => authentication.removeCredential()),
+
+            saveConfiguration: (payload) =>
+              withConfigRefresh(() =>
+                authentication.saveConfiguration(payload),
+              ),
+
+            saveCredential: (payload) =>
+              withConfigRefresh(() => authentication.saveCredential(payload)),
+
+            removeCredential: () =>
+              withConfigRefresh(() => authentication.removeCredential()),
           }}
           selectedEnvironmentId={selectedEnvironmentId}
           isAdmin={isAdmin}
@@ -396,7 +648,9 @@ export function ApiDetailScreen({
           httpMethod={currentApi.httpMethod}
           environments={activeEnvironments}
           selectedEnvironmentId={selectedEnvironmentId}
-          onSelectEnvironment={(environmentId) => guardedNavigate(() => setSelectedEnvironmentId(environmentId))}
+          onSelectEnvironment={(environmentId) =>
+            guardedNavigate(() => setSelectedEnvironmentId(environmentId))
+          }
           config={config}
           configsLoading={configsLoading}
           executionTargetReadiness={executionTargetReadiness}
@@ -455,5 +709,5 @@ export function ApiDetailScreen({
         />
       )}
     </div>
-  );
+  )
 }

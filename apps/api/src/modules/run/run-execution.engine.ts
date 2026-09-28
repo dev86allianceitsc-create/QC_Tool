@@ -1,6 +1,7 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
 import { decryptSecret } from "../../common/utils/credential-crypto";
+import { ComparisonEngineService } from "../comparison/comparison-engine.service";
 import { ComparisonService } from "../comparison/comparison.service";
 import { SnapshotService } from "../snapshot/snapshot.service";
 import { SNAPSHOT_MAX_PAYLOAD_BYTES } from "../snapshot/snapshot.constants";
@@ -47,6 +48,7 @@ export class RunExecutionEngine {
     private readonly prisma: PrismaService,
     private readonly snapshotService: SnapshotService,
     private readonly comparisonService: ComparisonService,
+    private readonly comparisonEngineService: ComparisonEngineService,
   ) {}
 
   async dispatchRun(runId: string, environmentId: string, pending: PendingExecutionContext[]): Promise<void> {
@@ -336,6 +338,22 @@ export class RunExecutionEngine {
               baselineSnapshotId: baseline.snapshotId,
               targetSnapshotId: targetSnapshot.snapshotId,
             });
+
+            // CMP-013/016: re-query rather than change
+            // tryCreateAutomaticComparison's Promise<void> contract, same
+            // reasoning as the targetSnapshot lookup above — a cheap indexed
+            // point lookup on uq_comparisons_source_execution_id that also
+            // naturally resolves the idempotent-retry/P2002-no-op case.
+            // QUEUED is checked because a same-transaction invalidation race
+            // can already have written this first attempt as BLOCKED
+            // (SNAPSHOT_INVALIDATED) — nothing left for the engine to do then.
+            const createdAttempt = await this.prisma.comparisonAttempt.findFirst({
+              where: { comparison: { sourceExecutionId: runExecutionId }, attemptNumber: 1 },
+              select: { comparisonAttemptId: true, processingStatus: true },
+            });
+            if (createdAttempt && createdAttempt.processingStatus === "QUEUED") {
+              await this.comparisonEngineService.processAttempt(createdAttempt.comparisonAttemptId);
+            }
           } else if (!targetSnapshot && baseline) {
             // A baseline existed but this dispatch did not end up producing a
             // target Snapshot (e.g. oversized payload) — first-gate-wins
