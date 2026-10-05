@@ -146,16 +146,32 @@ afterEach(() => {
 
 function stubFetch(
   overrides: {
-    comparison?: unknown
+    comparison?: unknown | (() => unknown)
     comparisonStatus?: number
     apis?: unknown
     environments?: unknown
     findings?: unknown
     attempts?: unknown
     classificationEvents?: unknown
+    reevaluate?: unknown
+    reevaluateStatus?: number
   } = {},
 ) {
   const fetchMock = vi.fn().mockImplementation((url: string) => {
+    if (url.includes("/reevaluate")) {
+      return Promise.resolve(
+        mockJsonResponse(
+          overrides.reevaluateStatus ?? 201,
+          overrides.reevaluate ?? {
+            comparisonAttemptId: "att-2",
+            attemptNumber: 2,
+            processingStatus: "COMPLETED",
+            result: "SAME",
+          },
+        ),
+      )
+    }
+
     if (url.includes("/findings")) {
       return Promise.resolve(
         mockJsonResponse(200, overrides.findings ?? EMPTY_FINDINGS),
@@ -188,7 +204,10 @@ function stubFetch(
     }
 
     if (url.includes("/comparisons/")) {
-      const body = overrides.comparison ?? makeDetail()
+      const body =
+        typeof overrides.comparison === "function"
+          ? (overrides.comparison as () => unknown)()
+          : overrides.comparison ?? makeDetail()
       return Promise.resolve(
         mockJsonResponse(
           overrides.comparisonStatus ?? 200,
@@ -440,5 +459,85 @@ describe("ComparisonDetailScreen", () => {
     }
 
     expect(screen.getByText(/taking longer than expected/i)).toBeInTheDocument()
+  })
+
+  it("shows the Re-evaluate button only once the Comparison is COMPLETED", async () => {
+    stubFetch({ comparison: makeDetail({ processingStatus: "QUEUED" }) })
+
+    renderScreen()
+
+    await screen.findByText("Widget API")
+    expect(
+      screen.queryByRole("button", { name: "Re-evaluate" }),
+    ).not.toBeInTheDocument()
+  })
+
+  it("shows the Re-evaluate button once COMPLETED", async () => {
+    stubFetch({
+      comparison: makeDetail({ processingStatus: "COMPLETED", result: "SAME" }),
+    })
+
+    renderScreen()
+
+    expect(
+      await screen.findByRole("button", { name: "Re-evaluate" }),
+    ).toBeInTheDocument()
+  })
+
+  it("clicking Re-evaluate calls the reevaluate API then refetches and shows the updated result", async () => {
+    let comparisonCalls = 0
+    const fetchMock = stubFetch({
+      comparison: () => {
+        comparisonCalls += 1
+        return comparisonCalls === 1
+          ? makeDetail({ processingStatus: "COMPLETED", result: "DIFFERENT" })
+          : makeDetail({ processingStatus: "COMPLETED", result: "SAME" })
+      },
+      reevaluate: {
+        comparisonAttemptId: "att-2",
+        attemptNumber: 2,
+        processingStatus: "COMPLETED",
+        result: "SAME",
+      },
+    })
+
+    renderScreen()
+
+    const button = await screen.findByRole("button", { name: "Re-evaluate" })
+    expect(await screen.findByText("DIFFERENT")).toBeInTheDocument()
+
+    fireEvent.click(button)
+
+    expect(await screen.findByText("SAME")).toBeInTheDocument()
+    expect(screen.queryByText("DIFFERENT")).not.toBeInTheDocument()
+
+    const reevaluateCall = fetchMock.mock.calls.find(([url]) =>
+      String(url).includes("/reevaluate"),
+    )
+    expect(reevaluateCall).toBeDefined()
+    expect(reevaluateCall?.[1]).toMatchObject({ method: "POST" })
+  })
+
+  it("shows an inline error when the reevaluate call fails, without crashing", async () => {
+    stubFetch({
+      comparison: makeDetail({ processingStatus: "COMPLETED", result: "SAME" }),
+      reevaluateStatus: 409,
+      reevaluate: {
+        errorCode: "LATEST_ATTEMPT_NOT_COMPLETED",
+        message: "The latest attempt is not completed.",
+        details: [],
+        requestId: "r1",
+      },
+    })
+
+    renderScreen()
+
+    const button = await screen.findByRole("button", { name: "Re-evaluate" })
+    fireEvent.click(button)
+
+    expect(
+      await screen.findByText("The latest attempt is not completed."),
+    ).toBeInTheDocument()
+    expect(await screen.findByText("SAME")).toBeInTheDocument()
   })
 })

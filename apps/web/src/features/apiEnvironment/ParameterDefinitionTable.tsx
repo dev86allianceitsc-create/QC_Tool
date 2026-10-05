@@ -70,21 +70,22 @@ export function ParameterDefinitionTable({
                   {param.required ? "Yes" : "Optional"}
                 </td>
                 <td className={tdClass}>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => onEdit(index)}
-                  >
-                    Edit
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="ml-2 text-error"
-                    onClick={() => setPendingRemoveIndex(index)}
-                  >
-                    Remove
-                  </Button>
+                  <div className="flex gap-2">
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => onEdit(index)}
+                    >
+                      Edit
+                    </Button>
+                    <Button
+                      variant="danger"
+                      size="sm"
+                      onClick={() => setPendingRemoveIndex(index)}
+                    >
+                      Remove
+                    </Button>
+                  </div>
                 </td>
               </tr>
             ))}

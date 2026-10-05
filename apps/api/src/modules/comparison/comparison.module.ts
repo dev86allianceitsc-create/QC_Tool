@@ -1,5 +1,6 @@
 import { Module } from "@nestjs/common";
 import { AuditModule } from "../audit/audit.module";
+import { IgnoreRulesModule } from "../ignore-rules/ignore-rules.module";
 import { ComparisonChainAccessGuard } from "./comparison-chain-access.guard";
 import { ComparisonAccessGuard } from "./comparison-access.guard";
 import { ComparisonEngineService } from "./comparison-engine.service";
@@ -21,7 +22,7 @@ import { ProjectComparisonsController } from "./project-comparisons.controller";
 // AuditWriterService injected ad hoc) so both ComparisonService and
 // ComparisonQueryService can record audit events, same wiring RunModule uses.
 @Module({
-  imports: [AuditModule],
+  imports: [AuditModule, IgnoreRulesModule],
   controllers: [ProjectComparisonsController, ProjectComparisonChainsController, ComparisonsController, ComparisonChainsController],
   providers: [ComparisonService, ComparisonEngineService, ComparisonQueryService, ComparisonAccessGuard, ComparisonChainAccessGuard],
   exports: [ComparisonService, ComparisonEngineService],

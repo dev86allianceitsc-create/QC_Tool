@@ -33,6 +33,7 @@ export interface UseSingleRunExecutionResult {
     requestValues: RunRequestValuesPayload,
     apiVersion: string,
     databaseVersion: string,
+    testAccountId?: string,
   ) => Promise<void>
 
   reset: () => void
@@ -173,6 +174,7 @@ export function useSingleRunExecution(
       requestValues: RunRequestValuesPayload,
       apiVersion: string,
       databaseVersion: string,
+      testAccountId?: string,
     ) => {
       if (!projectId || !apiId || !environmentId || !accessToken) return
 
@@ -196,6 +198,8 @@ export function useSingleRunExecution(
             runType: "SINGLE",
 
             environmentId,
+
+            testAccountId: testAccountId || undefined,
 
             executions: [
               {

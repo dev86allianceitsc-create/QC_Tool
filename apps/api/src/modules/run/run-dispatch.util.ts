@@ -64,6 +64,34 @@ function maskAuthorizationValue(value: string): string {
   return match ? `${match[1]} [REDACTED]` : "[REDACTED]";
 }
 
+// Sets a default header only if none of the caller's existing keys already
+// name it under a different casing. A plain object treats "Content-Type" and
+// "content-type" (e.g. from an imported cURL/fetch capture, which lowercases
+// every header) as distinct keys, so an unconditional/case-sensitive default
+// assignment leaves both in the object; fetch's Headers then combines same-
+// name entries with a comma, producing a malformed value that many servers
+// reject outright.
+export function setHeaderIfAbsent(headers: Record<string, string>, name: string, value: string): void {
+  const lower = name.toLowerCase();
+  if (Object.keys(headers).some((key) => key.toLowerCase() === lower)) {
+    return;
+  }
+  headers[name] = value;
+}
+
+// Sets a header unconditionally, first removing any existing key that names
+// it under a different casing — otherwise the old key survives alongside
+// the new one and fetch's Headers combines both into one malformed value.
+export function setHeader(headers: Record<string, string>, name: string, value: string): void {
+  const lower = name.toLowerCase();
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === lower && key !== name) {
+      delete headers[key];
+    }
+  }
+  headers[name] = value;
+}
+
 export interface HeaderPair {
   key: string;
   value: string;
@@ -195,14 +223,51 @@ export async function readResponseBody(response: Response, snapshotCapBytes: num
   };
 }
 
-export function getByDotPath(obj: unknown, path: string): unknown {
-  if (!path) {
-    return undefined;
-  }
-  return path.split(".").reduce<unknown>((acc, key) => {
-    if (acc && typeof acc === "object" && key in (acc as object)) {
-      return (acc as Record<string, unknown>)[key];
+// Login Form no longer has an admin-configured path to the access token
+// (the "Token Response Path" field was removed) — the login response is
+// searched instead. Priority-ordered so a response carrying more than one
+// candidate key resolves deterministically (e.g. a wrapper that also
+// echoes back an unrelated "token" field alongside the real "access_token").
+const ACCESS_TOKEN_KEY_CANDIDATES = [
+  "access_token",
+  "accessToken",
+  "token",
+  "id_token",
+  "idToken",
+  "jwt",
+  "auth_token",
+  "authToken",
+  "bearer_token",
+  "bearerToken",
+];
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// Breadth-first search for an access token in a Login Form login response,
+// capped at depth 2 (the top level, plus one level of nesting — e.g.
+// `{ data: { access_token: ... } }`) so an unrelated, deeply nested payload
+// is never mistaken for a token. Arrays are skipped: a token is never
+// returned inside a list. Shallower matches win over deeper ones;
+// ACCESS_TOKEN_KEY_CANDIDATES order breaks ties within the same depth.
+export function findAccessToken(json: unknown): string | undefined {
+  let currentLevel: Record<string, unknown>[] = isPlainObject(json) ? [json] : [];
+
+  for (let depth = 0; depth < 2 && currentLevel.length > 0; depth++) {
+    for (const key of ACCESS_TOKEN_KEY_CANDIDATES) {
+      for (const obj of currentLevel) {
+        const match = Object.keys(obj).find((k) => k.toLowerCase() === key.toLowerCase());
+        if (match) {
+          const value = obj[match];
+          if (typeof value === "string" && value.trim() !== "") {
+            return value;
+          }
+        }
+      }
     }
-    return undefined;
-  }, obj);
+    currentLevel = currentLevel.flatMap((obj) => Object.values(obj).filter(isPlainObject));
+  }
+
+  return undefined;
 }

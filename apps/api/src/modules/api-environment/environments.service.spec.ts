@@ -58,6 +58,50 @@ describe("EnvironmentsService", () => {
     });
   });
 
+  describe("create — baseUrl (Phase 1 domain binding)", () => {
+    it("stores a trimmed, validated baseUrl when provided", async () => {
+      const { service, prisma } = makeService();
+      prisma.environment.findFirst.mockResolvedValue(null);
+      prisma.environment.create.mockResolvedValue({ environmentId: "e-1", environmentStatus: "ACTIVE", baseUrl: "https://api.example.com" });
+
+      await service.create(
+        "p-1",
+        { environmentName: "Staging", classification: "NON_PRODUCTION", baseUrl: "  https://api.example.com  " } as never,
+        "admin-1",
+      );
+
+      expect(prisma.environment.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ baseUrl: "https://api.example.com" }),
+      });
+    });
+
+    it("stores null when baseUrl is omitted", async () => {
+      const { service, prisma } = makeService();
+      prisma.environment.findFirst.mockResolvedValue(null);
+      prisma.environment.create.mockResolvedValue({ environmentId: "e-1", environmentStatus: "ACTIVE", baseUrl: null });
+
+      await service.create("p-1", { environmentName: "Staging", classification: "NON_PRODUCTION" } as never, "admin-1");
+
+      expect(prisma.environment.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ baseUrl: null }),
+      });
+    });
+
+    it("rejects a baseUrl containing a path", async () => {
+      const { service, prisma } = makeService();
+      prisma.environment.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.create(
+          "p-1",
+          { environmentName: "Staging", classification: "NON_PRODUCTION", baseUrl: "https://api.example.com/widgets" } as never,
+          "admin-1",
+        ),
+      ).rejects.toBeInstanceOf(BusinessException);
+      expect(prisma.environment.create).not.toHaveBeenCalled();
+    });
+  });
+
   describe("update (API-ENV-004) — Allow Run transition rules", () => {
     it("forces allowRun=false on NON_PRODUCTION -> PRODUCTION regardless of a submitted allowRun=true", async () => {
       const { service, prisma } = makeService();
@@ -160,6 +204,92 @@ describe("EnvironmentsService", () => {
       const { service } = makeService();
 
       await expect(service.update("p-1", "e-1", {} as never, "admin-1")).rejects.toBeInstanceOf(BusinessException);
+    });
+  });
+
+  describe("update — baseUrl (Phase 1 domain binding)", () => {
+    it("sets a trimmed, validated baseUrl and records before/after in the audit row", async () => {
+      const { service, prisma, auditWriter } = makeService();
+      const existing = {
+        environmentId: "e-1",
+        environmentName: "Env",
+        classification: "NON_PRODUCTION",
+        allowRun: true,
+        environmentStatus: "ACTIVE",
+        baseUrl: null,
+      };
+      prisma.environment.findFirst.mockResolvedValue(existing);
+      prisma.environment.update.mockResolvedValue({ ...existing, baseUrl: "https://api.example.com" });
+
+      await service.update("p-1", "e-1", { baseUrl: "  https://api.example.com  " } as never, "admin-1");
+
+      expect(prisma.environment.update).toHaveBeenCalledWith({
+        where: { environmentId: "e-1" },
+        data: { baseUrl: "https://api.example.com" },
+      });
+      expect(auditWriter.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventType: "ENVIRONMENT_UPDATED",
+          beforeData: { baseUrl: null },
+          afterData: { baseUrl: "https://api.example.com" },
+        }),
+        prisma,
+      );
+    });
+
+    it("clears an existing baseUrl to null when the empty string is submitted", async () => {
+      const { service, prisma } = makeService();
+      const existing = {
+        environmentId: "e-1",
+        environmentName: "Env",
+        classification: "NON_PRODUCTION",
+        allowRun: true,
+        environmentStatus: "ACTIVE",
+        baseUrl: "https://api.example.com",
+      };
+      prisma.environment.findFirst.mockResolvedValue(existing);
+      prisma.environment.update.mockResolvedValue({ ...existing, baseUrl: null });
+
+      await service.update("p-1", "e-1", { baseUrl: "" } as never, "admin-1");
+
+      expect(prisma.environment.update).toHaveBeenCalledWith({
+        where: { environmentId: "e-1" },
+        data: { baseUrl: null },
+      });
+    });
+
+    it("rejects a baseUrl with a query component, leaving the environment unchanged", async () => {
+      const { service, prisma } = makeService();
+      const existing = {
+        environmentId: "e-1",
+        environmentName: "Env",
+        classification: "NON_PRODUCTION",
+        allowRun: true,
+        environmentStatus: "ACTIVE",
+        baseUrl: null,
+      };
+      prisma.environment.findFirst.mockResolvedValue(existing);
+
+      await expect(
+        service.update("p-1", "e-1", { baseUrl: "https://api.example.com?x=1" } as never, "admin-1"),
+      ).rejects.toBeInstanceOf(BusinessException);
+      expect(prisma.environment.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects any baseUrl change while INACTIVE (not part of pure reactivation)", async () => {
+      const { service, prisma } = makeService();
+      prisma.environment.findFirst.mockResolvedValue({
+        environmentId: "e-1",
+        environmentName: "Env",
+        classification: "NON_PRODUCTION",
+        allowRun: true,
+        environmentStatus: "INACTIVE",
+        baseUrl: null,
+      });
+
+      await expect(
+        service.update("p-1", "e-1", { baseUrl: "https://api.example.com" } as never, "admin-1"),
+      ).rejects.toBeInstanceOf(BusinessException);
     });
   });
 });

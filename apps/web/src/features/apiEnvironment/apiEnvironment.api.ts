@@ -11,14 +11,18 @@ import type {
   EnvironmentDetail,
   EnvironmentListItem,
   ApiEnvironmentConfigListItem,
+  ImportCurlFetchPayload,
   ImportOutcome,
   PreviewImportResult,
 } from "./apiEnvironment.types"
 
 import type {
   AuthenticationConfiguration,
+  CreateTestAccountPayload,
   PutAuthenticationConfigurationPayload,
   PutCredentialPayload,
+  TestAccount,
+  UpdateTestAccountPayload,
 } from "./authentication.types"
 
 import type {
@@ -161,6 +165,22 @@ export function confirmOpenApiImport(
   )
 }
 
+// Phase 2 (customer feedback #1)
+
+export function importCurlFetchApi(
+  projectId: string,
+
+  payload: ImportCurlFetchPayload,
+
+  accessToken: string,
+): Promise<ApiDetail> {
+  return apiClient.post<ApiDetail>(
+    `/projects/${projectId}/api-imports/curl-fetch`,
+    payload,
+    accessToken,
+  )
+}
+
 export interface ListEnvironmentsParams {
   page?: number
 
@@ -193,7 +213,7 @@ export function listEnvironments(
 export function createEnvironment(
   projectId: string,
 
-  body: { environmentName: string; classification: EnvironmentClassification },
+  body: { environmentName: string; classification: EnvironmentClassification; baseUrl?: string },
 
   accessToken: string,
 ): Promise<EnvironmentDetail> {
@@ -232,6 +252,8 @@ export function updateEnvironment(
     allowRun?: boolean
 
     environmentStatus?: "ACTIVE" | "INACTIVE"
+
+    baseUrl?: string
   },
 
   accessToken: string,
@@ -319,19 +341,18 @@ export function putRequestInput(
   )
 }
 
-// API-AUTH-001
+// API-AUTH-001 — REVISION 3C-R02: Authentication moved to Project Settings,
+// scoped per-Environment only (shared by every API in that Environment).
 
 export function getAuthenticationConfiguration(
   projectId: string,
-
-  apiId: string,
 
   environmentId: string,
 
   accessToken: string,
 ): Promise<AuthenticationConfiguration> {
   return apiClient.get<AuthenticationConfiguration>(
-    `/projects/${projectId}/apis/${apiId}/environment-configs/${environmentId}/authentication`,
+    `/projects/${projectId}/environments/${environmentId}/authentication`,
 
     accessToken,
   )
@@ -342,8 +363,6 @@ export function getAuthenticationConfiguration(
 export function putAuthenticationConfiguration(
   projectId: string,
 
-  apiId: string,
-
   environmentId: string,
 
   payload: PutAuthenticationConfigurationPayload,
@@ -351,7 +370,7 @@ export function putAuthenticationConfiguration(
   accessToken: string,
 ): Promise<AuthenticationConfiguration> {
   return apiClient.put<AuthenticationConfiguration>(
-    `/projects/${projectId}/apis/${apiId}/environment-configs/${environmentId}/authentication`,
+    `/projects/${projectId}/environments/${environmentId}/authentication`,
 
     payload,
 
@@ -364,8 +383,6 @@ export function putAuthenticationConfiguration(
 export function putCredential(
   projectId: string,
 
-  apiId: string,
-
   environmentId: string,
 
   payload: PutCredentialPayload,
@@ -373,7 +390,7 @@ export function putCredential(
   accessToken: string,
 ): Promise<AuthenticationConfiguration> {
   return apiClient.put<AuthenticationConfiguration>(
-    `/projects/${projectId}/apis/${apiId}/environment-configs/${environmentId}/authentication/credential`,
+    `/projects/${projectId}/environments/${environmentId}/authentication/credential`,
 
     payload,
 
@@ -385,12 +402,87 @@ export function putCredential(
 
 export function deleteCredential(
   projectId: string,
-  apiId: string,
   environmentId: string,
   accessToken: string,
 ): Promise<AuthenticationConfiguration> {
   return apiClient.delete<AuthenticationConfiguration>(
-    `/projects/${projectId}/apis/${apiId}/environment-configs/${environmentId}/authentication/credential`,
+    `/projects/${projectId}/environments/${environmentId}/authentication/credential`,
+
+    accessToken,
+  )
+}
+
+// API-AUTH-005 — REVISION 3C-R02: Login Form Test Accounts, per Environment.
+
+export function listTestAccounts(
+  projectId: string,
+
+  environmentId: string,
+
+  accessToken: string,
+): Promise<TestAccount[]> {
+  return apiClient.get<TestAccount[]>(
+    `/projects/${projectId}/environments/${environmentId}/authentication/test-accounts`,
+
+    accessToken,
+  )
+}
+
+// API-AUTH-006
+
+export function createTestAccount(
+  projectId: string,
+
+  environmentId: string,
+
+  payload: CreateTestAccountPayload,
+
+  accessToken: string,
+): Promise<TestAccount> {
+  return apiClient.post<TestAccount>(
+    `/projects/${projectId}/environments/${environmentId}/authentication/test-accounts`,
+
+    payload,
+
+    accessToken,
+  )
+}
+
+// API-AUTH-007
+
+export function updateTestAccount(
+  projectId: string,
+
+  environmentId: string,
+
+  testAccountId: string,
+
+  payload: UpdateTestAccountPayload,
+
+  accessToken: string,
+): Promise<TestAccount> {
+  return apiClient.put<TestAccount>(
+    `/projects/${projectId}/environments/${environmentId}/authentication/test-accounts/${testAccountId}`,
+
+    payload,
+
+    accessToken,
+  )
+}
+
+// API-AUTH-008
+
+export function removeTestAccount(
+  projectId: string,
+
+  environmentId: string,
+
+  testAccountId: string,
+
+  accessToken: string,
+): Promise<void> {
+  return apiClient.delete<void>(
+    `/projects/${projectId}/environments/${environmentId}/authentication/test-accounts/${testAccountId}`,
 
     accessToken,
   )

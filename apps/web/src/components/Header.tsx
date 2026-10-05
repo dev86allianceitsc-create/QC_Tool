@@ -1,3 +1,5 @@
+import { useEffect, useRef, useState } from "react"
+
 import { Button } from "./ui/Button"
 
 // Extracted unchanged from App.tsx so it can be reused by the new
@@ -47,6 +49,24 @@ export function Header({
     onSelect: (projectId: string) => void
   }
 }) {
+  const [menuOpen, setMenuOpen] = useState(false)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!menuOpen) return
+
+    function handleClickOutside(event: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setMenuOpen(false)
+      }
+    }
+
+    document.addEventListener("mousedown", handleClickOutside)
+    return () => document.removeEventListener("mousedown", handleClickOutside)
+  }, [menuOpen])
+
+  const initial = user.email.trim().charAt(0).toUpperCase() || "?"
+
   return (
     <div className="flex h-[60px] items-center justify-between border-b border-border bg-white px-5">
       <div className="flex items-center gap-2">
@@ -79,26 +99,65 @@ export function Header({
           <h2 className="m-0 text-lg font-semibold text-gray-900">{title}</h2>
         )}
       </div>
-      <div className="flex items-center gap-5">
-        <span className="text-sm text-muted">
-          {user.email} ({user.role})
-        </span>
+      <div className="flex items-center gap-3">
         {onNavigateAuditLogs && (
           <Button variant="secondary" size="sm" onClick={onNavigateAuditLogs}>
             Audit Logs
           </Button>
         )}
-        {onShowSessionExpired && (
+
+        <div className="relative" ref={menuRef}>
           <button
-            onClick={onShowSessionExpired}
-            className="cursor-pointer rounded-md border border-border bg-white px-2 py-1 text-[10px] text-muted"
+            type="button"
+            aria-label="Account menu"
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            onClick={() => setMenuOpen((prev) => !prev)}
+            className="flex h-9 w-9 cursor-pointer items-center justify-center rounded-full bg-primary text-sm font-semibold text-white"
           >
-            [Test Session Expired]
+            {initial}
           </button>
-        )}
-        <Button variant="secondary" size="sm" onClick={onLogout}>
-          Logout
-        </Button>
+
+          {menuOpen && (
+            <div
+              role="menu"
+              className="absolute right-0 top-11 z-20 w-56 rounded-lg border border-border bg-white py-1 shadow-sm"
+            >
+              <div className="border-b border-border px-3 py-2">
+                <p className="m-0 truncate text-sm font-medium text-gray-900">
+                  {user.email}
+                </p>
+                <p className="m-0 mt-0.5 text-xs text-muted">{user.role}</p>
+              </div>
+
+              {onShowSessionExpired && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setMenuOpen(false)
+                    onShowSessionExpired()
+                  }}
+                  className="block w-full cursor-pointer px-3 py-2 text-left text-xs text-muted hover:bg-gray-50"
+                >
+                  [Dev] Test Session Expired
+                </button>
+              )}
+
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setMenuOpen(false)
+                  onLogout()
+                }}
+                className="block w-full cursor-pointer px-3 py-2 text-left text-sm text-gray-900 hover:bg-gray-50"
+              >
+                Logout
+              </button>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )

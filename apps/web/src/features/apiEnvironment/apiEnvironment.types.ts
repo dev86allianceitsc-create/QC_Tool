@@ -59,6 +59,8 @@ export interface EnvironmentListItem {
 
   environmentStatus: EnvironmentStatus
 
+  baseUrl: string | null
+
   createdAt: string
 
   updatedAt: string
@@ -67,6 +69,8 @@ export interface EnvironmentListItem {
 export interface EnvironmentDetail extends EnvironmentListItem {
   projectId: string
 }
+
+export type EffectiveUrlSource = "OVERRIDE" | "ENVIRONMENT_DOMAIN" | "NOT_CONFIGURED"
 
 export interface ApiEnvironmentConfigListItem {
   environmentId: string
@@ -82,6 +86,12 @@ export interface ApiEnvironmentConfigListItem {
   urlStatus: "CONFIGURED" | "NOT_CONFIGURED"
 
   fullUrl: string | null
+
+  environmentBaseUrl: string | null
+
+  effectiveUrl: string | null
+
+  effectiveUrlSource: EffectiveUrlSource
 
   credentialStatus: "NOT_REQUIRED" | "CONFIGURED" | "NOT_CONFIGURED"
 }
@@ -126,4 +136,41 @@ export interface ImportOutcome {
   results: ImportedCandidate[]
 
   summary: { imported: number; skipped: number; failed: number }
+}
+
+// Phase 2 (customer feedback #1) — client-side-only preview of a parsed
+// curl command / fetch() snippet, before the user reviews/edits it.
+export interface CurlFetchImportPreview {
+  httpMethod: string
+
+  path: string
+
+  suggestedApiName: string
+
+  queryParameters: { name: string; required: boolean; value: string }[]
+
+  headerParameters: { name: string; required: boolean; value: string }[]
+
+  requestBody: { bodyType: "JSON" } | null
+
+  bodyValue: string | null
+
+  warnings: string[]
+}
+
+// Mirrors ImportCurlFetchDto (apps/api/.../dto/import-curl-fetch.dto.ts).
+export interface ImportCurlFetchPayload {
+  apiName: string
+
+  httpMethod: string
+
+  path: string
+
+  description: string | null
+
+  queryParameters: { name: string; required: boolean }[]
+
+  headerParameters: { name: string; required: boolean }[]
+
+  requestBody: { bodyType: "JSON" } | null
 }

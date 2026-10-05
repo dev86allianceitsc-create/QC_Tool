@@ -38,6 +38,12 @@ export function useApiRunHistory(
   onSessionExpired: () => void,
 
   onAccessDenied: () => void,
+
+  // Phase 3 Test Case History & Run Again (§8 drill-down) — when provided,
+  // pins the list to one Test Case's chronological execution history
+  // (testCaseKey is a fixed scope here, not a user-editable filter like
+  // environmentId).
+  testCaseKey?: string | null,
 ) {
   const [filters, setFilters] =
     useState<ApiRunHistoryFiltersState>(EMPTY_FILTERS)
@@ -59,9 +65,10 @@ export function useApiRunHistory(
   const queryFilters = useMemo(
     () => ({
       environmentId: filters.environmentId || undefined,
+      testCaseKey: testCaseKey || undefined,
     }),
 
-    [filters],
+    [filters, testCaseKey],
   )
 
   const refetch = useCallback(async () => {
@@ -107,6 +114,10 @@ export function useApiRunHistory(
   useEffect(() => {
     void refetch()
   }, [refetch])
+
+  useEffect(() => {
+    setPage(1)
+  }, [testCaseKey])
 
   function updateFilters(patch: Partial<ApiRunHistoryFiltersState>) {
     setFilters((prev) => ({ ...prev, ...patch }))

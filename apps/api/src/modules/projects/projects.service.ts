@@ -7,6 +7,7 @@ import { CreateProjectDto } from "./dto/create-project.dto";
 import { ListProjectsQueryDto } from "./dto/list-projects-query.dto";
 import { UpdateProjectDto } from "./dto/update-project.dto";
 import type { PagedResult } from "../audit/audit-query.service";
+import { createDefaultEnvironments } from "../api-environment/default-environments.util";
 
 export interface ProjectListItem {
   projectId: string;
@@ -103,6 +104,32 @@ export class ProjectsService {
         },
         tx,
       );
+
+      // Phase 1 auto-scaffold (customer feedback #4): every new Project is
+      // seeded with the standard Dev/UAT/Production environments so ADMIN
+      // does not have to create them by hand; each is audited exactly like a
+      // manually-created environment (EnvironmentsService.create).
+      const seededEnvironments = await createDefaultEnvironments(tx, created.projectId);
+      for (const env of seededEnvironments) {
+        await this.auditWriter.record(
+          {
+            eventType: "ENVIRONMENT_CREATED",
+            result: "SUCCESS",
+            actorUserId,
+            targetType: "ENVIRONMENT",
+            targetId: env.environmentId,
+            targetDisplay: env.environmentName,
+            projectId: created.projectId,
+            afterData: {
+              environmentName: env.environmentName,
+              classification: env.classification,
+              allowRun: env.allowRun,
+              environmentStatus: env.environmentStatus,
+            },
+          },
+          tx,
+        );
+      }
 
       return this.toDetail(created);
     });

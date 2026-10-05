@@ -14,21 +14,35 @@ import { ConfirmDialog } from "../projects/ConfirmDialog"
 
 import { BearerTokenCredentialFields } from "./BearerTokenCredentialFields"
 
+import { ImportLoginRequestFlow } from "./ImportLoginRequestFlow"
+
 import { LoginFormCredentialFields } from "./LoginFormCredentialFields"
 
 import {
   AUTH_TYPE_LABELS,
   AUTH_TYPE_OPTIONS,
+  LOGIN_MODE_LABELS,
+  LOGIN_MODE_OPTIONS,
   buildConfigurationPayload,
+  changeLoginModeConfirmMessage,
   changeTypeConfirmMessage,
   isLoginFormDraftDirty,
   toLoginFormDraft,
   validateLoginFormDraft,
 } from "./authentication.util"
 
+import {
+  buildImportedConfigurationPayload,
+  isLoginImportDraftDirty,
+  toLoginImportDraft,
+  validateLoginImportDraft,
+  type LoginImportDraft,
+} from "./loginRequestImport.util"
+
 import type {
   AuthenticationConfiguration,
   AuthType,
+  LoginMode,
   PutAuthenticationConfigurationPayload,
   PutCredentialPayload,
 } from "./authentication.types"
@@ -52,11 +66,13 @@ const CREDENTIAL_STATUS_BADGE: Record<AuthenticationConfiguration["credentialSta
 
 // Input. Changing Auth Type away from the saved value always goes through a
 
-// confirm (CL-3C-02 / AC-UI-3C-03) before the PUT is sent — the backend
+// confirm (AC-UI-3C-03) before the PUT is sent — the switch immediately
 
-// wipes the old type's secret atomically in the same mutation, so the
+// changes what every Run against this Environment authenticates with, so
 
-// warning has to come before the request, not after it.
+// it's still worth confirming, even though the backend now preserves every
+
+// type's/mode's configuration rather than deleting it.
 
 export function AuthenticationTab({
   config,
@@ -101,7 +117,15 @@ export function AuthenticationTab({
 }) {
   const [authTypeDraft, setAuthTypeDraft] = useState<AuthType>(config.authType)
 
+  const [loginModeDraft, setLoginModeDraft] = useState<LoginMode>(
+    config.loginMode ?? "IMPORTED",
+  )
+
   const [loginFormDraft, setLoginFormDraft] = useState(toLoginFormDraft(config))
+
+  const [loginImportDraft, setLoginImportDraft] = useState<LoginImportDraft>(
+    toLoginImportDraft(config),
+  )
 
   const [fieldError, setFieldError] = useState<string | null>(null)
 
@@ -112,10 +136,16 @@ export function AuthenticationTab({
   const [pendingPayload, setPendingPayload] =
     useState<PutAuthenticationConfigurationPayload | null>(null)
 
+  const savedLoginMode = config.loginMode ?? "IMPORTED"
+
   const dirty =
     authTypeDraft !== config.authType ||
     (authTypeDraft === "LOGIN_FORM" &&
-      isLoginFormDraftDirty(loginFormDraft, config))
+      (loginModeDraft !== savedLoginMode ||
+        (loginModeDraft === "MANUAL" &&
+          isLoginFormDraftDirty(loginFormDraft, config)) ||
+        (loginModeDraft === "IMPORTED" &&
+          isLoginImportDraftDirty(loginImportDraft, config))))
 
   useEffect(() => {
     onDirtyChange?.(dirty)
@@ -132,7 +162,11 @@ export function AuthenticationTab({
   function handleCancel() {
     setAuthTypeDraft(config.authType)
 
+    setLoginModeDraft(savedLoginMode)
+
     setLoginFormDraft(toLoginFormDraft(config))
+
+    setLoginImportDraft(toLoginImportDraft(config))
 
     setFieldError(null)
 
@@ -147,25 +181,27 @@ export function AuthenticationTab({
     try {
       const saved = await onSaveConfiguration(payload)
 
-      // Re-baseline the draft on what the backend actually stored (it trims,
+      // Re-baseline the draft on what the backend actually stored (it trims
 
-      // and nulls out the non-LOGIN_FORM fields), otherwise the dirty flag —
+      // the active mode's fields and preserves the inactive mode's), otherwise
 
-      // and with it the unsaved-changes guard — would stay on after a save
+      // the dirty flag — and with it the unsaved-changes guard — would stay on
 
-      // that succeeded.
+      // after a save that succeeded.
 
       setAuthTypeDraft(saved.authType)
 
+      setLoginModeDraft(saved.loginMode ?? "IMPORTED")
+
       setLoginFormDraft(toLoginFormDraft(saved))
+
+      setLoginImportDraft(toLoginImportDraft(saved))
 
       setJustSaved(true)
     } catch (err) {
-      // CL-3C-02: a failed save leaves the stored type and credential
+      // A failed save leaves the stored type and credential untouched, so
 
-      // untouched, so the draft stays as it was for the Admin to retry or
-
-      // cancel out of.
+      // the draft stays as it was for the Admin to retry or cancel out of.
 
       setSaveError(
         err instanceof ApiError
@@ -178,19 +214,47 @@ export function AuthenticationTab({
   async function handleSave() {
     setFieldError(null)
 
+    let payload: PutAuthenticationConfigurationPayload
+
     if (authTypeDraft === "LOGIN_FORM") {
-      const validationError = validateLoginFormDraft(loginFormDraft)
+      if (loginModeDraft === "MANUAL") {
+        const validationError = validateLoginFormDraft(loginFormDraft)
 
-      if (validationError) {
-        setFieldError(validationError)
+        if (validationError) {
+          setFieldError(validationError)
 
-        return
+          return
+        }
+
+        payload = buildConfigurationPayload(
+          authTypeDraft,
+          loginModeDraft,
+          loginFormDraft,
+        )
+      } else {
+        const validationError = validateLoginImportDraft(loginImportDraft)
+
+        if (validationError) {
+          setFieldError(validationError)
+
+          return
+        }
+
+        payload = buildImportedConfigurationPayload(loginImportDraft)
       }
+    } else {
+      payload = buildConfigurationPayload(
+        authTypeDraft,
+        loginModeDraft,
+        loginFormDraft,
+      )
     }
 
-    const payload = buildConfigurationPayload(authTypeDraft, loginFormDraft)
+    const typeOrModeChanged =
+      authTypeDraft !== config.authType ||
+      (authTypeDraft === "LOGIN_FORM" && loginModeDraft !== savedLoginMode)
 
-    if (authTypeDraft !== config.authType) {
+    if (typeOrModeChanged) {
       setPendingPayload(payload)
 
       return
@@ -220,8 +284,8 @@ export function AuthenticationTab({
               Authentication Type
             </h3>
             {/* UI-AUTH-01 context: this Authentication Configuration belongs
-                to this API in this Environment only, never to another API or
-                another Environment (REQ-SEC-002). */}
+                to this Environment only (REVISION 3C-R02), shared by every
+                API in it, never to another Environment (REQ-SEC-002). */}
             {environmentName && (
               <p className="m-0 mt-1 text-xs text-muted">
                 Environment: {environmentName}
@@ -288,24 +352,50 @@ export function AuthenticationTab({
 
       {authTypeDraft === "NONE" && (
         <p className="text-sm text-muted">
-          No authentication is required for this API in this Environment.
+          No authentication is required for this Environment.
         </p>
       )}
 
       {authTypeDraft === "LOGIN_FORM" && (
-        <LoginFormCredentialFields
-          draft={loginFormDraft}
-          onDraftChange={setLoginFormDraft}
-          readOnly={readOnly}
-          typeSaved={config.authType === "LOGIN_FORM"}
-          credentialStatus={config.credentialStatus}
-          saving={saving}
-          onSaveCredential={(password) =>
-            onSaveCredential({ password }).then(() => undefined)
-          }
-          onRemoveCredential={() => onRemoveCredential().then(() => undefined)}
-        />
+        <Card>
+          <div className="max-w-xs">
+            <Select
+              label="Login Form Mode"
+              value={loginModeDraft}
+              onChange={(e) => {
+                setLoginModeDraft(e.target.value as LoginMode)
+
+                setFieldError(null)
+
+                setSaveError(null)
+              }}
+              disabled={readOnly}
+            >
+              {LOGIN_MODE_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </Select>
+          </div>
+        </Card>
       )}
+
+      {authTypeDraft === "LOGIN_FORM" &&
+        (loginModeDraft === "IMPORTED" ? (
+          <ImportLoginRequestFlow
+            initialDraft={loginImportDraft}
+            onSave={setLoginImportDraft}
+            onCancel={() => setLoginImportDraft(toLoginImportDraft(config))}
+            readOnly={readOnly}
+          />
+        ) : (
+          <LoginFormCredentialFields
+            draft={loginFormDraft}
+            onDraftChange={setLoginFormDraft}
+            readOnly={readOnly}
+          />
+        ))}
 
       {authTypeDraft === "BEARER_TOKEN" &&
         (config.authType === "BEARER_TOKEN" ? (
@@ -326,22 +416,32 @@ export function AuthenticationTab({
           </p>
         ))}
 
-      {pendingPayload && (
-        <ConfirmDialog
-          title="Change authentication type"
-          message={changeTypeConfirmMessage(
-            AUTH_TYPE_LABELS[config.authType],
+      {pendingPayload &&
+        (authTypeDraft !== config.authType ? (
+          <ConfirmDialog
+            title="Change authentication type"
+            message={changeTypeConfirmMessage(
+              AUTH_TYPE_LABELS[config.authType],
 
-            AUTH_TYPE_LABELS[pendingPayload.authType],
+              AUTH_TYPE_LABELS[pendingPayload.authType],
+            )}
+            confirmLabel="Change type"
+            onConfirm={() => void confirmTypeChange()}
+            onCancel={() => setPendingPayload(null)}
+          />
+        ) : (
+          <ConfirmDialog
+            title="Change Login Form mode"
+            message={changeLoginModeConfirmMessage(
+              LOGIN_MODE_LABELS[savedLoginMode],
 
-            config.credentialStatus === "CONFIGURED",
-          )}
-          confirmLabel="Change type"
-          danger
-          onConfirm={() => void confirmTypeChange()}
-          onCancel={() => setPendingPayload(null)}
-        />
-      )}
+              LOGIN_MODE_LABELS[loginModeDraft],
+            )}
+            confirmLabel="Change mode"
+            onConfirm={() => void confirmTypeChange()}
+            onCancel={() => setPendingPayload(null)}
+          />
+        ))}
     </div>
   )
 }

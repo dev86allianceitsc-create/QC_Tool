@@ -19,7 +19,7 @@ import { Card } from "../../components/ui/Card"
 
 import { HttpMethodBadge } from "../../components/ui/HttpMethodBadge"
 
-import { thClass, tdClass, trHoverClass } from "../../components/ui/table"
+import { thClass, thCenterClass, tdClass, trHoverClass } from "../../components/ui/table"
 
 const UNFINISHED_RUN_STATUSES = new Set(["PENDING", "RUNNING"])
 
@@ -215,7 +215,7 @@ export function RunResultScreen({
                     <th className={thClass}>Outcome</th>
                     <th className={thClass}>HTTP</th>
                     <th className={thClass}>Duration</th>
-                    <th className={`${thClass} text-center`}>Actions</th>
+                    <th className={thCenterClass}>Actions</th>
                   </tr>
                 </thead>
                 <tbody>

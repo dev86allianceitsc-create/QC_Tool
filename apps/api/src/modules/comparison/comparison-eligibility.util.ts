@@ -44,6 +44,15 @@ export interface EligibilitySnapshotInput {
   // `[]` by the INPUT/OUTPUT header comparison.
   hasRequestHeaders: boolean;
   hasResponseHeaders: boolean;
+  // Phase 3 Test Case History & Run Again (3C-R02 revert): a Login Form
+  // Test Account is re-authenticated fresh per dispatch, so two Snapshots
+  // sharing the same authContextKey can still legitimately belong to two
+  // different Test Accounts — authContextKey alone cannot catch that, since
+  // it is computed only from environmentId+authType+contextVersion, never
+  // the account itself. Checked below only when authType is LOGIN_FORM;
+  // BEARER_TOKEN/NONE have no Test Account concept at all.
+  authType: string;
+  testAccountId: string | null;
 }
 
 export type EligibilityOutcome = { eligible: true } | { eligible: false; reasonCode: ComparisonAttemptReasonCode; reasonDetailSafe: string };
@@ -61,6 +70,10 @@ export function checkComparisonEligibility(a: EligibilitySnapshotInput, b: Eligi
   }
   if (a.authContextKey !== b.authContextKey) {
     return { eligible: false, reasonCode: "CONTEXT_MISMATCH", reasonDetailSafe: "Snapshot A and B were captured under different authentication contexts" };
+  }
+
+  if (a.authType === "LOGIN_FORM" && a.testAccountId !== b.testAccountId) {
+    return { eligible: false, reasonCode: "TEST_ACCOUNT_MISMATCH", reasonDetailSafe: "Snapshot A and B were captured using different Test Accounts" };
   }
 
   if (a.isInvalidated || b.isInvalidated) {

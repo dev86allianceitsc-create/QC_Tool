@@ -14,23 +14,33 @@ function config(
   overrides: Partial<AuthenticationConfiguration> = {},
 ): AuthenticationConfiguration {
   return {
-    apiId: "a1",
-
     environmentId: "e1",
 
     authType: "NONE",
 
     credentialStatus: "NOT_REQUIRED",
 
-    loginUrl: null,
+    loginMode: null,
 
-    username: null,
+    loginUrl: null,
 
     usernameField: null,
 
     passwordField: null,
 
-    tokenResponsePath: null,
+    importMethod: null,
+
+    importUrl: null,
+
+    importHeaders: null,
+
+    importBodyFormat: null,
+
+    importBodyFields: null,
+
+    importUsernameLocation: null,
+
+    importPasswordLocation: null,
 
     updatedAt: "2026-09-22T09:00:00.000Z",
 
@@ -77,7 +87,13 @@ function selectType(value: string) {
   fireEvent.change(screen.getByLabelText("Type"), { target: { value } })
 }
 
-describe("AuthenticationTab — Authentication Type change confirmation (CL-3C-02 / AC-UI-3C-03)", () => {
+function selectLoginMode(value: string) {
+  fireEvent.change(screen.getByLabelText("Login Form Mode"), {
+    target: { value },
+  })
+}
+
+describe("AuthenticationTab — Authentication Type change confirmation (AC-UI-3C-03)", () => {
   it("does not send the change until the confirmation is accepted", async () => {
     const { onSaveConfiguration } = renderTab({
       config: config({
@@ -103,7 +119,7 @@ describe("AuthenticationTab — Authentication Type change confirmation (CL-3C-0
     )
   })
 
-  it("warns that the stored credential will be removed and cannot be recovered", async () => {
+  it("states that the previous type's configuration is kept, not removed", async () => {
     renderTab({
       config: config({
         authType: "BEARER_TOKEN",
@@ -116,13 +132,13 @@ describe("AuthenticationTab — Authentication Type change confirmation (CL-3C-0
     fireEvent.click(screen.getByText("Save"))
 
     const message = await screen.findByText(
-      /The credential saved for Bearer Token will be removed/,
+      /Bearer Token's configuration is kept/,
     )
 
-    expect(message).toHaveTextContent("cannot be recovered automatically")
+    expect(message).toHaveTextContent("reappears if you switch back to it")
   })
 
-  it("confirms every type change, including one with no credential to lose, without claiming one exists", async () => {
+  it("confirms every type change identically, regardless of credential status", async () => {
     const { onSaveConfiguration } = renderTab({
       config: config({ authType: "NONE", credentialStatus: "NOT_REQUIRED" }),
     })
@@ -135,10 +151,8 @@ describe("AuthenticationTab — Authentication Type change confirmation (CL-3C-0
       await screen.findByText("Change authentication type"),
     ).toBeInTheDocument()
 
-    expect(screen.queryByText(/credential saved for/)).not.toBeInTheDocument()
-
     expect(
-      screen.getByText(/Any configuration saved for None will be discarded/),
+      screen.getByText(/None's configuration is kept/),
     ).toBeInTheDocument()
 
     expect(onSaveConfiguration).not.toHaveBeenCalled()
@@ -187,6 +201,50 @@ describe("AuthenticationTab — Authentication Type change confirmation (CL-3C-0
 
     expect((screen.getByLabelText("Type") as HTMLSelectElement).value).toBe(
       "BEARER_TOKEN",
+    )
+  })
+
+  it("re-shows the previously-saved Imported draft after switching authType away and back, once the backend preserves it", async () => {
+    const preservedImportFields = {
+      loginMode: "IMPORTED" as const,
+      importMethod: "POST",
+      importUrl: "https://target.example.com/oauth/token",
+      importHeaders: [],
+      importBodyFormat: "FORM_URLENCODED" as const,
+      importBodyFields: [{ name: "username", value: "" }],
+      importUsernameLocation: { kind: "BODY" as const, name: "username" },
+      importPasswordLocation: null,
+    }
+
+    const onSaveConfiguration = vi.fn(async () =>
+      config({
+        authType: "NONE",
+        credentialStatus: "NOT_REQUIRED",
+        ...preservedImportFields,
+      }),
+    )
+
+    renderTab({
+      config: config({
+        authType: "LOGIN_FORM",
+        credentialStatus: "NOT_CONFIGURED",
+        ...preservedImportFields,
+      }),
+      onSaveConfiguration,
+    })
+
+    selectType("NONE")
+
+    fireEvent.click(screen.getByText("Save"))
+
+    fireEvent.click(await screen.findByText("Change type"))
+
+    await waitFor(() => expect(onSaveConfiguration).toHaveBeenCalled())
+
+    selectType("LOGIN_FORM")
+
+    expect(await screen.findByLabelText("Login URL *")).toHaveValue(
+      "https://target.example.com/oauth/token",
     )
   })
 
@@ -354,13 +412,9 @@ describe("AuthenticationTab — safe metadata only (REQ-SEC-002)", () => {
 
         loginUrl: "https://target.example.com/login",
 
-        username: "qa.user",
-
         usernameField: "username",
 
         passwordField: "password",
-
-        tokenResponsePath: "data.access_token",
       }),
 
       environmentName: "Staging",
@@ -370,15 +424,15 @@ describe("AuthenticationTab — safe metadata only (REQ-SEC-002)", () => {
 
     expect(screen.getByText(/^Last updated:/)).toBeInTheDocument()
 
-    // The password field exists only as an empty write-only input — a stored
+    // Login Form's username/password now live on per-Environment Test
 
-    // secret is never rendered back.
+    // Accounts (a separate screen) — this tab never renders a secret field.
 
-    expect(
-      (screen.getByLabelText(
-        "New Password (replaces the current one)",
-      ) as HTMLInputElement).value,
-    ).toBe("")
+    // ("Password Field" is metadata about the field name, not a secret.)
+
+    expect(screen.queryByLabelText("Password")).not.toBeInTheDocument()
+
+    expect(screen.queryByLabelText("Username")).not.toBeInTheDocument()
   })
 
   it("asks for the type to be saved before its credential can be configured", () => {
@@ -403,43 +457,39 @@ describe("AuthenticationTab — safe metadata only (REQ-SEC-002)", () => {
 
   // never be saved as LOGIN_FORM in the first place.
 
-  it("shows the Login Form config fields immediately, while still withholding the credential action until the type is saved", () => {
+  it("shows the Login Form config fields immediately once Manual mode is selected — Test Accounts (the actual credential) are managed on a separate screen, not gated here", () => {
     renderTab({ config: config({ authType: "NONE" }) })
 
     selectType("LOGIN_FORM")
 
-    expect(screen.getByLabelText("Login URL")).toBeInTheDocument()
+    selectLoginMode("MANUAL")
 
-    expect(screen.getByLabelText("Username")).toBeInTheDocument()
+    expect(screen.getByLabelText("Login URL")).toBeInTheDocument()
 
     expect(screen.getByLabelText("Username Field")).toBeInTheDocument()
 
     expect(screen.getByLabelText("Password Field")).toBeInTheDocument()
 
-    expect(screen.getByLabelText("Token Response Path")).toBeInTheDocument()
-
     expect(
-      screen.getByText(
+      screen.queryByText(
         "Save this Authentication Type before configuring its credential.",
       ),
-    ).toBeInTheDocument()
+    ).not.toBeInTheDocument()
 
     expect(screen.queryByLabelText("Password")).not.toBeInTheDocument()
   })
 
-  it("lets a first-time Login Form selection be filled in and saved (regression for the Login URL required dead end)", async () => {
+  it("lets a first-time Login Form selection be filled in and saved via Manual mode (regression for the Login URL required dead end)", async () => {
     const { onSaveConfiguration } = renderTab({
       config: config({ authType: "NONE" }),
     })
 
     selectType("LOGIN_FORM")
 
+    selectLoginMode("MANUAL")
+
     fireEvent.change(screen.getByLabelText("Login URL"), {
       target: { value: "https://target.example.com/login" },
-    })
-
-    fireEvent.change(screen.getByLabelText("Username"), {
-      target: { value: "qa.user" },
     })
 
     fireEvent.change(screen.getByLabelText("Username Field"), {
@@ -450,10 +500,6 @@ describe("AuthenticationTab — safe metadata only (REQ-SEC-002)", () => {
       target: { value: "password" },
     })
 
-    fireEvent.change(screen.getByLabelText("Token Response Path"), {
-      target: { value: "access_token" },
-    })
-
     fireEvent.click(screen.getByText("Save"))
 
     fireEvent.click(await screen.findByText("Change type"))
@@ -462,16 +508,146 @@ describe("AuthenticationTab — safe metadata only (REQ-SEC-002)", () => {
       expect(onSaveConfiguration).toHaveBeenCalledWith({
         authType: "LOGIN_FORM",
 
-        loginUrl: "https://target.example.com/login",
+        loginMode: "MANUAL",
 
-        username: "qa.user",
+        loginUrl: "https://target.example.com/login",
 
         usernameField: "username",
 
         passwordField: "password",
-
-        tokenResponsePath: "access_token",
       }),
+    )
+  })
+
+  it("defaults a never-configured Login Form row to Import mode", () => {
+    renderTab({ config: config({ authType: "NONE" }) })
+
+    selectType("LOGIN_FORM")
+
+    expect(
+      (screen.getByLabelText("Login Form Mode") as HTMLSelectElement).value,
+    ).toBe("IMPORTED")
+
+    expect(
+      screen.getByText("Paste a", { exact: false }),
+    ).toBeInTheDocument()
+  })
+
+  it("keeps both drafts when toggling Login Form mode before Save", () => {
+    renderTab({ config: config({ authType: "NONE" }) })
+
+    selectType("LOGIN_FORM")
+
+    selectLoginMode("MANUAL")
+
+    fireEvent.change(screen.getByLabelText("Login URL"), {
+      target: { value: "https://target.example.com/login" },
+    })
+
+    selectLoginMode("IMPORTED")
+
+    expect(screen.getByText("Paste a", { exact: false })).toBeInTheDocument()
+
+    selectLoginMode("MANUAL")
+
+    expect(
+      (screen.getByLabelText("Login URL") as HTMLInputElement).value,
+    ).toBe("https://target.example.com/login")
+  })
+
+  it("enables Save and sends the new importUrl after editing the Login URL on an already-Imported config", async () => {
+    const onSaveConfiguration = vi.fn(async (payload: any) =>
+      config({
+        authType: "LOGIN_FORM",
+        loginMode: "IMPORTED",
+        credentialStatus: "NOT_REQUIRED",
+        importMethod: payload.importMethod,
+        importUrl: payload.importUrl,
+        importHeaders: payload.importHeaders,
+        importBodyFormat: payload.importBodyFormat,
+        importBodyFields: payload.importBodyFields,
+        importUsernameLocation: payload.importUsernameLocation,
+        importPasswordLocation: payload.importPasswordLocation,
+      }),
+    )
+
+    renderTab({
+      config: config({
+        authType: "LOGIN_FORM",
+        loginMode: "IMPORTED",
+        credentialStatus: "NOT_REQUIRED",
+        importMethod: "POST",
+        importUrl: "https://coshare-api-dev-ad.allianceitsc.com/oauth2/token",
+        importHeaders: [{ name: "Content-Type", value: "application/x-www-form-urlencoded" }],
+        importBodyFormat: "FORM_URLENCODED",
+        importBodyFields: [
+          { name: "username", value: "" },
+          { name: "password", value: "" },
+        ],
+        importUsernameLocation: { kind: "BODY", name: "username" },
+        importPasswordLocation: { kind: "BODY", name: "password" },
+      }),
+      onSaveConfiguration,
+    })
+
+    const urlInput = screen.getByLabelText("Login URL *")
+
+    fireEvent.change(urlInput, {
+      target: { value: "https://coshare-api-uat-ad.allianceitsc.com/oauth2/token" },
+    })
+
+    fireEvent.click(screen.getByText("Use this request"))
+
+    await screen.findByText(/Request captured\. Click Save/)
+
+    fireEvent.click(screen.getByText("Save"))
+
+    await waitFor(() => expect(onSaveConfiguration).toHaveBeenCalled())
+
+    expect(onSaveConfiguration).toHaveBeenCalledWith(
+      expect.objectContaining({
+        importUrl: "https://coshare-api-uat-ad.allianceitsc.com/oauth2/token",
+      }),
+    )
+  })
+
+  it("asks for a mode-change confirmation (not a credential-loss warning) when only loginMode changes", async () => {
+    const { onSaveConfiguration } = renderTab({
+      config: config({
+        authType: "LOGIN_FORM",
+        loginMode: "IMPORTED",
+        credentialStatus: "CONFIGURED",
+      }),
+    })
+
+    selectLoginMode("MANUAL")
+
+    fireEvent.change(screen.getByLabelText("Login URL"), {
+      target: { value: "https://target.example.com/login" },
+    })
+
+    fireEvent.change(screen.getByLabelText("Username Field"), {
+      target: { value: "username" },
+    })
+
+    fireEvent.change(screen.getByLabelText("Password Field"), {
+      target: { value: "password" },
+    })
+
+    fireEvent.click(screen.getByText("Save"))
+
+    expect(
+      await screen.findByText("Change Login Form mode"),
+    ).toBeInTheDocument()
+
+    expect(screen.queryByText(/credential saved for/)).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByText("Change mode"))
+
+    await waitFor(() =>
+      expect(onSaveConfiguration).toHaveBeenCalledWith(
+        expect.objectContaining({ authType: "LOGIN_FORM", loginMode: "MANUAL" }),
+      ),
     )
   })
 })

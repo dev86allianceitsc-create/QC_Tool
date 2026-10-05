@@ -63,7 +63,7 @@ export function ComparisonOverviewTab({
           <h4 className="m-0 mb-1.5 text-xs font-semibold text-gray-900">
             Applied rules
           </h4>
-          <dl className="m-0 grid grid-cols-2 gap-x-4 gap-y-2 text-xs text-gray-900 sm:grid-cols-3">
+          <dl className="m-0 grid grid-cols-2 gap-x-4 gap-y-2 text-xs text-gray-900 sm:grid-cols-4">
             <div>
               <dt className="text-muted">Rule manifest version</dt>
               <dd className="m-0 font-mono">
@@ -80,6 +80,12 @@ export function ComparisonOverviewTab({
               <dt className="text-muted">Exclusions applied</dt>
               <dd className="m-0">
                 {comparison.appliedRuleSummary.exclusionCount}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-muted">Ignore rules applied</dt>
+              <dd className="m-0">
+                {comparison.appliedRuleSummary.ignoreRuleCount}
               </dd>
             </div>
           </dl>

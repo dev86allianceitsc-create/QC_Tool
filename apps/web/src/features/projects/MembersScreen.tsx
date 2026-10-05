@@ -16,7 +16,7 @@ import { Input } from "../../components/ui/Input"
 
 import { Modal } from "../../components/ui/Modal"
 
-import { thClass, tdClass, trHoverClass } from "../../components/ui/table"
+import { thClass, thCenterClass, tdClass, trHoverClass } from "../../components/ui/table"
 
 type AddModalState = "default" | "loading" | "success" | "invalid" | "duplicate" | "blocked" | "error"
 
@@ -226,7 +226,7 @@ export function MembersScreen({
                 <th className={thClass}>Role</th>
                 <th className={thClass}>Status</th>
                 {isAdmin && (
-                  <th className={`${thClass} text-center`}>Actions</th>
+                  <th className={thCenterClass}>Actions</th>
                 )}
               </tr>
             </thead>

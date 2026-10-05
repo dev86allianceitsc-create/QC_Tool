@@ -6,10 +6,14 @@ import { BusinessException } from "../../common/exceptions/business.exception";
 import { assertProjectActive } from "../api-environment/apis.service";
 import { AuditWriterService } from "../audit/audit-writer.service";
 import { PrismaService } from "../../prisma/prisma.service";
+import type { HeaderPair } from "../run/run-dispatch.util";
 
 import { ComparisonEngineService } from "./comparison-engine.service";
 import { hasProjectAccess } from "./comparison-access.util";
+import { deriveFindingSides, type SnapshotSideEvidence } from "./comparison-finding-evidence.util";
 import {
+  COMPARISON_ATTEMPT_STALE_MS,
+  ComparisonAttemptTriggerKind,
   ComparisonAvailabilityReasonCode,
   ComparisonClassificationValue,
   ComparisonFindingPhase,
@@ -17,7 +21,7 @@ import {
   ComparisonResult,
   ComparisonSourceKind,
 } from "./comparison.constants";
-import { ComparisonService, RetryComparisonOutcome } from "./comparison.service";
+import { ComparisonService, ReevaluateAttemptOutcome, RetryComparisonOutcome } from "./comparison.service";
 import { CreateClassificationEventDto } from "./dto/create-classification-event.dto";
 import { CreateComparisonChainDto } from "./dto/create-comparison-chain.dto";
 import { CreateComparisonDto } from "./dto/create-comparison.dto";
@@ -92,6 +96,11 @@ export interface AppliedRuleSummaryDto {
   // Count only — never the raw exclusion identifiers (AnD §2.1 "không nhận
   // arbitrary exclusions"/no raw policy payload in a client-facing summary).
   exclusionCount: number;
+  // Output Ignore Rules actually applied to THIS attempt's OUTPUT diff
+  // (ComparisonEngineService.processAttempt -> filterIgnoredFindings), not
+  // "how many rules are enabled right now" — an attempt processed before a
+  // rule existed stays 0 forever, even if rules are added later (spec §6).
+  ignoreRuleCount: number;
 }
 
 export interface ComparisonDetailDto extends ComparisonSummaryDto {
@@ -149,6 +158,7 @@ export interface ComparisonFindingsResult {
 export interface ComparisonAttemptListItemDto {
   comparisonAttemptId: string;
   attemptNumber: number;
+  triggerKind: ComparisonAttemptTriggerKind;
   processingStatus: ComparisonProcessingStatus;
   stoppedAtGate: string | null;
   reasonCode: string | null;
@@ -211,6 +221,17 @@ export interface RetryComparisonResultDto {
   comparisonAttemptId: string;
   attemptNumber: number;
   processingStatus: "QUEUED";
+}
+
+// Re-evaluate always awaits the engine before responding (see
+// ComparisonQueryService.reevaluateComparison), so unlike
+// RetryComparisonResultDto's always-QUEUED shape, this reports the new
+// attempt's real terminal processingStatus/result.
+export interface ReevaluateComparisonResultDto {
+  comparisonAttemptId: string;
+  attemptNumber: number;
+  processingStatus: ComparisonProcessingStatus;
+  result: ComparisonResult | null;
 }
 
 export interface ClassificationEventResultDto {
@@ -277,11 +298,12 @@ function getRuleVersion(manifest: Prisma.JsonValue | null): string {
 
 function buildAppliedRuleSummary(manifest: Prisma.JsonValue | null): AppliedRuleSummaryDto | null {
   if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) return null;
-  const m = manifest as { ruleManifestVersion?: unknown; exclusions?: unknown; representationBoundary?: unknown };
+  const m = manifest as { ruleManifestVersion?: unknown; exclusions?: unknown; representationBoundary?: unknown; ignoreRules?: unknown };
   return {
     ruleManifestVersion: getRuleVersion(manifest),
     representationBoundary: typeof m.representationBoundary === "string" ? m.representationBoundary : "DEFAULT",
     exclusionCount: Array.isArray(m.exclusions) ? m.exclusions.length : 0,
+    ignoreRuleCount: Array.isArray(m.ignoreRules) ? m.ignoreRules.length : 0,
   };
 }
 
@@ -328,52 +350,6 @@ function toComparisonSummary(row: ComparisonSummaryRow): ComparisonSummaryDto {
   };
 }
 
-// CMP-005 Finding Detail (AnD Section 4.5): presence/display kind and any
-// preview text are re-derived from the stored finding row only — never a
-// second read of Snapshot payload bytes here (that requires the separate,
-// permission-rechecking raw-content contract, CMP-015/017/018). A finding
-// row never held raw bytes to begin with, so every side is reported as
-// redacted with no safeText/hexPreview until that contract exists.
-function presenceKindFor(component: string, byteOffset: bigint | null, byteLength: bigint | null, valueKind: string | null): FindingPresenceKind {
-  if (component !== "REQUEST_BODY" && component !== "RESPONSE_BODY") return "VALUE";
-  if (byteOffset === null && byteLength === null) return "ABSENT";
-  if (valueKind === "null") return "NULL";
-  if (byteLength === 0n) return "EMPTY";
-  return "VALUE";
-}
-
-function displayKindFor(valueKind: string | null, component: string): FindingDisplayKind {
-  switch (valueKind) {
-    case "object":
-      return "object";
-    case "array":
-      return "array";
-    case "string":
-      return "string";
-    case "number":
-      return "number";
-    case "true":
-    case "false":
-      return "boolean";
-    case "null":
-      return "null";
-    default:
-      return component === "REQUEST_BODY" || component === "RESPONSE_BODY" ? "raw" : "text";
-  }
-}
-
-function buildFindingSide(component: string, byteOffset: bigint | null, byteLength: bigint | null, valueKind: string | null): FindingSideDto {
-  const presenceKind = presenceKindFor(component, byteOffset, byteLength, valueKind);
-  return {
-    presenceKind,
-    displayKind: displayKindFor(valueKind, component),
-    safeText: null,
-    hexPreview: null,
-    isRedacted: true,
-    hasMore: presenceKind === "VALUE",
-  };
-}
-
 function buildLocation(locationPath: string | null, aOffset: bigint | null, aLength: bigint | null, bOffset: bigint | null, bLength: bigint | null): FindingLocationDto {
   if (locationPath !== null) return { path: locationPath };
   if (aOffset !== null || aLength !== null || bOffset !== null || bLength !== null) {
@@ -387,7 +363,15 @@ function buildLocation(locationPath: string | null, aOffset: bigint | null, aLen
   return null;
 }
 
-function toFindingItem(row: ComparisonFinding, ruleVersion: string): ComparisonFindingItemDto {
+// CMP-005 Finding Detail (AnD Section 4.5): presence/display kind and any
+// preview text are re-derived at read time from the Snapshot pair the
+// Comparison already references, keyed by the evidence this finding row
+// persisted (locationPath / byte offsets+lengths / value kinds) — see
+// comparison-finding-evidence.util.ts for the full derivation contract and
+// its redaction policy. This is a pure historical read: it never re-runs
+// the engine and never changes the persisted finding or attempt.
+function toFindingItem(row: ComparisonFinding, ruleVersion: string, evidenceA: SnapshotSideEvidence, evidenceB: SnapshotSideEvidence): ComparisonFindingItemDto {
+  const sides = deriveFindingSides(row, evidenceA, evidenceB);
   return {
     findingId: row.comparisonFindingId,
     phase: row.phase as ComparisonFindingPhase,
@@ -395,11 +379,40 @@ function toFindingItem(row: ComparisonFinding, ruleVersion: string): ComparisonF
     differenceKind: row.differenceKind,
     findingOrdinal: row.findingOrdinal,
     location: buildLocation(row.locationPath, row.aByteOffset, row.aByteLength, row.bByteOffset, row.bByteLength),
-    a: buildFindingSide(row.component, row.aByteOffset, row.aByteLength, row.aValueKind),
-    b: buildFindingSide(row.component, row.bByteOffset, row.bByteLength, row.bValueKind),
+    a: sides.a,
+    b: sides.b,
     ruleCode: row.ruleCode,
     ruleVersion,
     safeSummary: row.safeSummary,
+  };
+}
+
+function toHeaderPairs(json: Prisma.JsonValue | null | undefined): HeaderPair[] {
+  return Array.isArray(json) ? (json as unknown as HeaderPair[]) : [];
+}
+
+interface SnapshotEvidenceRow {
+  httpMethod: string;
+  requestUrl: string;
+  httpStatusCode: number | null;
+  requestHeaders: Prisma.JsonValue;
+  responseHeaders: Prisma.JsonValue;
+}
+
+interface SnapshotPayloadEvidenceRow {
+  requestBody: Uint8Array | null;
+  responseBody: Uint8Array | null;
+}
+
+function toSnapshotSideEvidence(row: SnapshotEvidenceRow | null, payload: SnapshotPayloadEvidenceRow | null): SnapshotSideEvidence {
+  return {
+    httpMethod: row?.httpMethod ?? null,
+    requestUrl: row?.requestUrl ?? null,
+    httpStatusCode: row?.httpStatusCode ?? null,
+    requestHeaders: toHeaderPairs(row?.requestHeaders),
+    responseHeaders: toHeaderPairs(row?.responseHeaders),
+    requestBody: payload?.requestBody ?? null,
+    responseBody: payload?.responseBody ?? null,
   };
 }
 
@@ -676,6 +689,19 @@ export class ComparisonQueryService {
     const latest = row.attempts[0]!;
     const terminal = TERMINAL_PROCESSING_STATUSES.includes(latest.processingStatus as ComparisonProcessingStatus);
 
+    // Self-heal: a non-terminal attempt this old was never going to still be
+    // legitimately in flight (in-process gate computation, no external I/O)
+    // — it was orphaned by a dropped fire-and-forget dispatch (e.g. an API
+    // process restart mid-flight) or an engine crash. Re-dispatching is safe
+    // even if it's a false positive: processAttempt/completeAttempt/
+    // failAttempt all refuse to touch an attempt that isn't QUEUED/RUNNING.
+    if (!terminal) {
+      const referenceTime = (latest.startedAt ?? latest.createdAt).getTime();
+      if (Date.now() - referenceTime >= COMPARISON_ATTEMPT_STALE_MS) {
+        this.dispatch(latest.comparisonAttemptId);
+      }
+    }
+
     return {
       ...summary,
       appliedRuleSummary: terminal ? buildAppliedRuleSummary(latest.appliedRuleManifest) : null,
@@ -692,12 +718,15 @@ export class ComparisonQueryService {
   // rule without any extra branching (e.g. INPUT is naturally empty for a
   // COMPLETED attempt, since completeAttempt never writes INPUT findings).
   async listComparisonFindings(comparisonId: string, query: ListComparisonFindingsQueryDto): Promise<ComparisonFindingsResult> {
-    const latestAttempt = await this.prisma.comparisonAttempt.findFirst({
-      where: { comparisonId },
-      orderBy: { attemptNumber: "desc" },
-      select: { comparisonAttemptId: true, processingStatus: true, comparisonResult: true, appliedRuleManifest: true },
-    });
-    if (!latestAttempt) {
+    const [comparison, latestAttempt] = await Promise.all([
+      this.prisma.comparison.findUnique({ where: { comparisonId }, select: { baselineSnapshotId: true, targetSnapshotId: true } }),
+      this.prisma.comparisonAttempt.findFirst({
+        where: { comparisonId },
+        orderBy: { attemptNumber: "desc" },
+        select: { comparisonAttemptId: true, processingStatus: true, comparisonResult: true, appliedRuleManifest: true },
+      }),
+    ]);
+    if (!comparison || !latestAttempt) {
       throw new BusinessException(HttpStatus.NOT_FOUND, "NOT_FOUND", "Comparison does not exist");
     }
 
@@ -716,18 +745,37 @@ export class ComparisonQueryService {
       this.prisma.comparisonFinding.count({ where }),
     ]);
 
+    const [evidenceA, evidenceB] = await this.loadFindingEvidence(comparison.baselineSnapshotId, comparison.targetSnapshotId, rows);
+
     const ruleVersion = getRuleVersion(latestAttempt.appliedRuleManifest);
     return {
       comparisonId,
       phase: query.phase ?? null,
       result: latestAttempt.comparisonResult as ComparisonResult | null,
       processingStatus: latestAttempt.processingStatus as ComparisonProcessingStatus,
-      items: rows.map((r) => toFindingItem(r, ruleVersion)),
+      items: rows.map((r) => toFindingItem(r, ruleVersion, evidenceA, evidenceB)),
       page,
       pageSize,
       totalItems,
       hasMore: page * pageSize < totalItems,
     };
+  }
+
+  // Fetches only what this page of findings can actually use: header/status
+  // columns are cheap and always fetched, but SnapshotPayload's body bytes
+  // are only pulled when a REQUEST_BODY/RESPONSE_BODY finding is actually on
+  // this page, since a body can be large and most pages are header-only.
+  private async loadFindingEvidence(baselineSnapshotId: string, targetSnapshotId: string, rows: ComparisonFinding[]): Promise<[SnapshotSideEvidence, SnapshotSideEvidence]> {
+    const needsBody = rows.some((r) => r.component === "REQUEST_BODY" || r.component === "RESPONSE_BODY");
+    const headerSelect = { httpMethod: true, requestUrl: true, httpStatusCode: true, requestHeaders: true, responseHeaders: true } satisfies Prisma.SnapshotSelect;
+
+    const [a, b, payloadA, payloadB] = await Promise.all([
+      this.prisma.snapshot.findUnique({ where: { snapshotId: baselineSnapshotId }, select: headerSelect }),
+      this.prisma.snapshot.findUnique({ where: { snapshotId: targetSnapshotId }, select: headerSelect }),
+      needsBody ? this.prisma.snapshotPayload.findUnique({ where: { snapshotId: baselineSnapshotId }, select: { requestBody: true, responseBody: true } }) : null,
+      needsBody ? this.prisma.snapshotPayload.findUnique({ where: { snapshotId: targetSnapshotId }, select: { requestBody: true, responseBody: true } }) : null,
+    ]);
+    return [toSnapshotSideEvidence(a, payloadA), toSnapshotSideEvidence(b, payloadB)];
   }
 
   // API-CMP-006. Full retry history, oldest first.
@@ -749,6 +797,7 @@ export class ComparisonQueryService {
       items: rows.map((r) => ({
         comparisonAttemptId: r.comparisonAttemptId,
         attemptNumber: r.attemptNumber,
+        triggerKind: r.triggerKind as ComparisonAttemptTriggerKind,
         processingStatus: r.processingStatus as ComparisonProcessingStatus,
         stoppedAtGate: r.stoppedAtGate,
         reasonCode: r.reasonCode,
@@ -790,6 +839,46 @@ export class ComparisonQueryService {
     });
 
     return { comparisonAttemptId: outcome.comparisonAttemptId, attemptNumber: outcome.attemptNumber, processingStatus: "QUEUED" };
+  }
+
+  // Re-evaluate (user-specified feature, not a numbered API-CMP-0xx item in
+  // the original AnD doc set). Deliberately AWAITS processAttempt instead of
+  // using this.dispatch's fire-and-forget pattern: unlike a real run, the
+  // engine does zero external I/O for a REEVALUATION attempt (no API-under-
+  // test call, purely stored Snapshots + whatever Ignore Rules are active
+  // now), so the new attempt is already terminal by the time this returns —
+  // the whole point is that Comparison Detail can show the new result
+  // immediately with one refetch, no polling.
+  async reevaluateComparison(comparisonId: string, actorUserId: string): Promise<ReevaluateComparisonResultDto> {
+    const outcome = await this.comparisonService.reevaluateComparisonAttempt(comparisonId);
+    if (!outcome.ok) {
+      if (outcome.code === "COMPARISON_NOT_FOUND") {
+        throw new BusinessException(HttpStatus.NOT_FOUND, "NOT_FOUND", "Comparison does not exist");
+      }
+      throw new BusinessException(HttpStatus.CONFLICT, outcome.code, REEVALUATE_CONFLICT_MESSAGES[outcome.code]);
+    }
+
+    await this.comparisonEngineService.processAttempt(outcome.comparisonAttemptId);
+
+    const attempt = await this.prisma.comparisonAttempt.findUniqueOrThrow({
+      where: { comparisonAttemptId: outcome.comparisonAttemptId },
+      select: { processingStatus: true, comparisonResult: true },
+    });
+    await this.auditWriter.record({
+      eventType: "COMPARISON_REEVALUATED",
+      result: "SUCCESS",
+      actorUserId,
+      targetType: "COMPARISON",
+      targetId: comparisonId,
+      afterData: { comparisonAttemptId: outcome.comparisonAttemptId, attemptNumber: outcome.attemptNumber, processingStatus: attempt.processingStatus, result: attempt.comparisonResult },
+    });
+
+    return {
+      comparisonAttemptId: outcome.comparisonAttemptId,
+      attemptNumber: outcome.attemptNumber,
+      processingStatus: attempt.processingStatus as ComparisonProcessingStatus,
+      result: attempt.comparisonResult as ComparisonResult | null,
+    };
   }
 
   // API-CMP-008.
@@ -907,4 +996,11 @@ const RETRY_CONFLICT_MESSAGES: Record<RetryFailureCode, string> = {
   ATTEMPT_NOT_TERMINAL: "The latest attempt is still QUEUED or RUNNING",
   REASON_NOT_RETRYABLE: "The latest attempt's reason code is not retryable",
   CONCURRENT_RETRY: "A concurrent retry request was already accepted for this Comparison",
+};
+
+type ReevaluateFailureCode = Exclude<Extract<ReevaluateAttemptOutcome, { ok: false }>["code"], "COMPARISON_NOT_FOUND">;
+
+const REEVALUATE_CONFLICT_MESSAGES: Record<ReevaluateFailureCode, string> = {
+  LATEST_ATTEMPT_NOT_COMPLETED: "Re-evaluate requires the latest attempt to already be COMPLETED",
+  CONCURRENT_REEVALUATION: "A concurrent re-evaluation request was already accepted for this Comparison",
 };

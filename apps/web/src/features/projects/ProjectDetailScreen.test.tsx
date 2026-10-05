@@ -40,6 +40,8 @@ function renderScreen(user: typeof ADMIN | typeof USER) {
       onBack={vi.fn()}
       onSessionExpired={vi.fn()}
       onAccessDenied={vi.fn()}
+      onNavigateToMembers={vi.fn()}
+      onNavigateToEnvironments={vi.fn()}
     />,
   )
 }
@@ -110,9 +112,11 @@ describe("ProjectDetailScreen", () => {
 
     await screen.findAllByText("Renamed")
 
-    const [, patchInit] = fetchMock.mock.calls[1]
+    const patchCall = fetchMock.mock.calls.find(
+      (c) => (c[1] as RequestInit | undefined)?.method === "PATCH",
+    )
 
-    expect(patchInit.method).toBe("PATCH")
+    expect(patchCall?.[1]?.method).toBe("PATCH")
   })
 
   it("deactivates via the status confirm dialog", async () => {
@@ -169,6 +173,8 @@ describe("ProjectDetailScreen", () => {
         onBack={onBack}
         onSessionExpired={vi.fn()}
         onAccessDenied={vi.fn()}
+        onNavigateToMembers={vi.fn()}
+        onNavigateToEnvironments={vi.fn()}
       />,
     )
 

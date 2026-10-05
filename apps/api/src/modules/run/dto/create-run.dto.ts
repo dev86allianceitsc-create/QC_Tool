@@ -103,6 +103,13 @@ export class CreateRunDto {
   @IsUUID()
   environmentId!: string;
 
+  // Only meaningful when the Environment's Authentication is LOGIN_FORM;
+  // ignored otherwise. Must belong to the given environmentId.
+  @ApiPropertyOptional({ format: "uuid", description: "Test Account to use when the Environment's Authentication is LOGIN_FORM" })
+  @IsOptional()
+  @IsUUID()
+  testAccountId?: string;
+
   @ApiProperty({ type: [RunExecutionInputDto], minItems: 1, maxItems: MAX_BATCH_EXECUTIONS })
   @IsArray()
   @ArrayMinSize(1)

@@ -43,9 +43,39 @@ describe("checkOutputDifferences", () => {
       expect(findings).toEqual([expect.objectContaining({ phase: "OUTPUT", component: "RESPONSE_HEADER", differenceKind: "VALUE", locationPath: "content-type", ruleCode: "HEADER_VALUE" })]);
     });
 
-    it("never auto-excludes Date or WWW-Authenticate headers from comparison", () => {
-      const findings = checkOutputDifferences(side({ responseHeaders: [{ key: "Date", value: "Mon, 01 Jan 2026 00:00:00 GMT" }] }), side({ responseHeaders: [{ key: "Date", value: "Tue, 02 Jan 2026 00:00:00 GMT" }] }));
-      expect(findings).toEqual([expect.objectContaining({ component: "RESPONSE_HEADER", locationPath: "date", ruleCode: "HEADER_VALUE" })]);
+    it("excludes known-volatile response headers (Date, ETag, Age, cf-ray, Report-To, X-RateLimit-*, ...) from comparison, case-insensitively", () => {
+      const findings = checkOutputDifferences(
+        side({
+          responseHeaders: [
+            { key: "Date", value: "Mon, 01 Jan 2026 00:00:00 GMT" },
+            { key: "ETag", value: '"abc"' },
+            { key: "Age", value: "123" },
+            { key: "CF-RAY", value: "1111-SIN" },
+            { key: "X-Request-Id", value: "req-a" },
+            { key: "Report-To", value: '{"group":"cf-nel","endpoints":[{"url":"https://a.nel.cloudflare.com/report/v4?s=aaa"}]}' },
+            { key: "X-RateLimit-Remaining", value: "98" },
+            { key: "X-RateLimit-Reset", value: "1790576121" },
+          ],
+        }),
+        side({
+          responseHeaders: [
+            { key: "Date", value: "Tue, 02 Jan 2026 00:00:00 GMT" },
+            { key: "ETag", value: '"xyz"' },
+            { key: "Age", value: "167" },
+            { key: "CF-RAY", value: "2222-SIN" },
+            { key: "X-Request-Id", value: "req-b" },
+            { key: "Report-To", value: '{"group":"cf-nel","endpoints":[{"url":"https://a.nel.cloudflare.com/report/v4?s=bbb"}]}' },
+            { key: "X-RateLimit-Remaining", value: "99" },
+            { key: "X-RateLimit-Reset", value: "1790580731" },
+          ],
+        }),
+      );
+      expect(findings).toEqual([]);
+    });
+
+    it("still compares WWW-Authenticate (and other non-excluded headers) normally", () => {
+      const findings = checkOutputDifferences(side({ responseHeaders: [{ key: "WWW-Authenticate", value: "Bearer realm=a" }] }), side({ responseHeaders: [{ key: "WWW-Authenticate", value: "Bearer realm=b" }] }));
+      expect(findings).toEqual([expect.objectContaining({ component: "RESPONSE_HEADER", locationPath: "www-authenticate", ruleCode: "HEADER_VALUE" })]);
     });
   });
 

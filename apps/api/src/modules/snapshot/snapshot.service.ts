@@ -20,6 +20,15 @@ export interface SnapshotCreationInput {
   authContextVersion: number;
   authIdentityLabel: string | null;
 
+  // Phase 3 Test Case History & Run Again. testAccountId mirrors
+  // DispatchRunContext.testAccountId (RunExecutionEngine) — needed by the
+  // Comparison eligibility Test-Account check, independent of testCaseKey.
+  // testCaseKey is the same computeTestCaseKey fingerprint frozen onto
+  // RunExecution at dispatch time, passed straight through here rather than
+  // recomputed.
+  testAccountId: string | null;
+  testCaseKey: string | null;
+
   initiatedByUserId: string;
   initiatedByLabel: string;
 
@@ -86,8 +95,7 @@ export class SnapshotService {
       return;
     }
 
-    const identityDiscriminator = input.authType === "LOGIN_FORM" ? (input.authIdentityLabel ?? "") : "";
-    const authContextKey = computeAuthContextKey(input.apiId, input.environmentId, input.authType, input.authContextVersion, identityDiscriminator);
+    const authContextKey = computeAuthContextKey(input.environmentId, input.authType, input.authContextVersion);
 
     try {
       await this.prisma.$transaction(async (tx) => {
@@ -105,6 +113,8 @@ export class SnapshotService {
             authContextVersion: input.authContextVersion,
             authIdentityLabel: input.authIdentityLabel,
             authContextKey,
+            testAccountId: input.testAccountId,
+            testCaseKey: input.testCaseKey,
             initiatedByUserId: input.initiatedByUserId,
             initiatedByLabel: input.initiatedByLabel,
             httpMethod: input.httpMethod,

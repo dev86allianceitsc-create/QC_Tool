@@ -8,6 +8,7 @@ import { assertProjectActive, isUniqueConstraintError } from "./apis.service";
 import { CreateEnvironmentDto } from "./dto/create-environment.dto";
 import { UpdateEnvironmentDto } from "./dto/update-environment.dto";
 import { ListEnvironmentsQueryDto } from "./dto/list-environments-query.dto";
+import { validateOriginOnlyUrl } from "./full-url-resolution.util";
 
 export interface EnvironmentListItem {
   environmentId: string;
@@ -15,6 +16,7 @@ export interface EnvironmentListItem {
   classification: string;
   allowRun: boolean;
   environmentStatus: string;
+  baseUrl: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -87,6 +89,12 @@ export class EnvironmentsService {
 
       const allowRun = dto.classification === "NON_PRODUCTION";
 
+      let normalizedBaseUrl: string | null = null;
+      if (dto.baseUrl !== undefined && dto.baseUrl !== "") {
+        normalizedBaseUrl = dto.baseUrl.trim();
+        validateOriginOnlyUrl(normalizedBaseUrl);
+      }
+
       let created;
       try {
         created = await tx.environment.create({
@@ -96,6 +104,7 @@ export class EnvironmentsService {
             classification: dto.classification,
             allowRun,
             environmentStatus: "ACTIVE",
+            baseUrl: normalizedBaseUrl,
           },
         });
       } catch (err) {
@@ -119,6 +128,7 @@ export class EnvironmentsService {
             classification: created.classification,
             allowRun: created.allowRun,
             environmentStatus: created.environmentStatus,
+            baseUrl: created.baseUrl,
           },
         },
         tx,
@@ -154,7 +164,8 @@ export class EnvironmentsService {
       dto.environmentName === undefined &&
       dto.classification === undefined &&
       dto.allowRun === undefined &&
-      dto.environmentStatus === undefined
+      dto.environmentStatus === undefined &&
+      dto.baseUrl === undefined
     ) {
       throw new BusinessException(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "At least one field is required");
     }
@@ -172,7 +183,8 @@ export class EnvironmentsService {
           dto.environmentStatus === "ACTIVE" &&
           dto.environmentName === undefined &&
           dto.classification === undefined &&
-          dto.allowRun === undefined;
+          dto.allowRun === undefined &&
+          dto.baseUrl === undefined;
         if (!onlyReactivating) {
           throw new BusinessException(
             HttpStatus.CONFLICT,
@@ -219,6 +231,18 @@ export class EnvironmentsService {
         beforeData.classification = existing.classification;
         afterData.classification = dto.classification;
         changed = true;
+      }
+      if (dto.baseUrl !== undefined) {
+        const normalizedBaseUrl = dto.baseUrl === "" ? null : dto.baseUrl.trim();
+        if (normalizedBaseUrl !== null) {
+          validateOriginOnlyUrl(normalizedBaseUrl);
+        }
+        if (normalizedBaseUrl !== existing.baseUrl) {
+          data.baseUrl = normalizedBaseUrl;
+          beforeData.baseUrl = existing.baseUrl;
+          afterData.baseUrl = normalizedBaseUrl;
+          changed = true;
+        }
       }
       if (finalAllowRun !== existing.allowRun) {
         data.allowRun = finalAllowRun;
@@ -272,6 +296,7 @@ export class EnvironmentsService {
     classification: string;
     allowRun: boolean;
     environmentStatus: string;
+    baseUrl: string | null;
     createdAt: Date;
     updatedAt: Date;
   }): EnvironmentListItem {
@@ -281,6 +306,7 @@ export class EnvironmentsService {
       classification: env.classification,
       allowRun: env.allowRun,
       environmentStatus: env.environmentStatus,
+      baseUrl: env.baseUrl,
       createdAt: env.createdAt,
       updatedAt: env.updatedAt,
     };
@@ -293,6 +319,7 @@ export class EnvironmentsService {
     classification: string;
     allowRun: boolean;
     environmentStatus: string;
+    baseUrl: string | null;
     createdAt: Date;
     updatedAt: Date;
   }): EnvironmentDetail {

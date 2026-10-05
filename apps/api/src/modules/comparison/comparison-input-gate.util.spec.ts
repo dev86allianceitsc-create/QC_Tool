@@ -53,9 +53,27 @@ describe("checkInputCompatibility", () => {
       expect(findings).toEqual([expect.objectContaining({ phase: "INPUT", component: "REQUEST_HEADER", differenceKind: "VALUE", locationPath: "accept", ruleCode: "HEADER_VALUE" })]);
     });
 
-    it("never auto-excludes the Authorization header from comparison", () => {
+    it("excludes the Authorization header from comparison so different Test Accounts remain comparable", () => {
       const findings = checkInputCompatibility(side({ requestHeaders: [{ key: "Authorization", value: "Bearer token-a" }] }), side({ requestHeaders: [{ key: "Authorization", value: "Bearer token-b" }] }));
-      expect(findings).toEqual([expect.objectContaining({ component: "REQUEST_HEADER", locationPath: "authorization", ruleCode: "HEADER_VALUE" })]);
+      expect(findings).toEqual([]);
+    });
+
+    it("excludes Authorization case-insensitively while still comparing other headers", () => {
+      const findings = checkInputCompatibility(
+        side({
+          requestHeaders: [
+            { key: "authorization", value: "Bearer token-a" },
+            { key: "Accept", value: "application/json" },
+          ],
+        }),
+        side({
+          requestHeaders: [
+            { key: "AUTHORIZATION", value: "Bearer token-b" },
+            { key: "Accept", value: "application/xml" },
+          ],
+        }),
+      );
+      expect(findings).toEqual([expect.objectContaining({ component: "REQUEST_HEADER", locationPath: "accept", ruleCode: "HEADER_VALUE" })]);
     });
   });
 

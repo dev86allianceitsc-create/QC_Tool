@@ -2,6 +2,8 @@ import { Injectable, Logger } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import type { HeaderPair } from "../run/run-dispatch.util";
+import { IgnoreRulesService } from "../ignore-rules/ignore-rules.service";
+import { filterIgnoredFindings } from "../ignore-rules/ignore-rule-path-matcher.util";
 import { checkComparisonEligibility, EligibilitySnapshotInput } from "./comparison-eligibility.util";
 import { checkInputCompatibility, InputGateSnapshotInput } from "./comparison-input-gate.util";
 import { checkOutputDifferences, OutputGateSnapshotInput } from "./comparison-output-gate.util";
@@ -34,6 +36,7 @@ export class ComparisonEngineService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly comparisonService: ComparisonService,
+    private readonly ignoreRulesService: IgnoreRulesService,
   ) {}
 
   async processAttempt(comparisonAttemptId: string): Promise<void> {
@@ -41,12 +44,17 @@ export class ComparisonEngineService {
     try {
       const pair = await this.loadSnapshotPair(comparisonAttemptId);
       if (!pair) {
-        // The attempt, its Comparison, or either Snapshot no longer exists —
-        // a concurrent caller may already be handling this attempt. Nothing
-        // left for this invocation to do.
+        // The attempt, its Comparison, or either Snapshot could not be
+        // found. Previously this returned silently, leaving the attempt
+        // stuck QUEUED forever (no terminal state, no log) since nothing
+        // else in this fire-and-forget pipeline would ever revisit it —
+        // mark it FAILED instead so it surfaces and, if re-dispatched later,
+        // is skipped as terminal rather than stalling again.
+        this.logger.error(`Comparison attempt ${comparisonAttemptId}: could not load attempt/comparison/snapshot pair`);
+        await this.markFailed(comparisonAttemptId, "ELIGIBILITY", "ENGINE_ERROR", "Comparison attempt, its Comparison, or a referenced Snapshot could not be found", null);
         return;
       }
-      const { a, b } = pair;
+      const { a, b, sourceKind } = pair;
 
       const eligibility = checkComparisonEligibility(toEligibilityInput(a), toEligibilityInput(b));
       if (!eligibility.eligible) {
@@ -61,10 +69,25 @@ export class ComparisonEngineService {
       stoppedAtGate = "INPUT";
       const inputFindings = checkInputCompatibility(toInputGateInput(a), toInputGateInput(b));
       if (inputFindings.length > 0) {
+        // Phase 3 Test Case History & Run Again: for an automatic comparison
+        // (AUTO_EXECUTION/RERUN_EXECUTION), baseline selection (concept A)
+        // already guarantees both sides share the same testCaseKey, so a
+        // user-facing "input differs" RESULT would be misleading — the only
+        // way raw input legitimately differs is a different Test Case, which
+        // never reaches this stage. A non-empty finding here can only mean
+        // the *resolved* request drifted despite identical raw input (e.g.
+        // the API's Full URL was edited between the baseline and now) — a
+        // defensive anomaly/safety check (concept B), reported as
+        // CONFIG_DRIFT_DETECTED ("comparison unavailable"), never as
+        // INPUT_MISMATCH. Manual/chain pairs (no testCaseKey guarantee at
+        // all) keep the original INPUT_MISMATCH result unchanged.
+        const isAutomatic = sourceKind === "AUTO_EXECUTION" || sourceKind === "RERUN_EXECUTION";
         await this.comparisonService.blockAttempt(comparisonAttemptId, {
           stoppedAtGate,
-          reasonCode: "INPUT_MISMATCH",
-          reasonDetailSafe: summarizeFindings(inputFindings),
+          reasonCode: isAutomatic ? "CONFIG_DRIFT_DETECTED" : "INPUT_MISMATCH",
+          reasonDetailSafe: isAutomatic
+            ? "Resolved request differs from the baseline despite matching test case identity (configuration likely changed)"
+            : summarizeFindings(inputFindings),
           inputCheckOutcome: "MISMATCH",
           findings: inputFindings,
         });
@@ -73,10 +96,19 @@ export class ComparisonEngineService {
 
       stoppedAtGate = "OUTPUT";
       const outputFindings = checkOutputDifferences(toOutputGateInput(a), toOutputGateInput(b));
-      const result = outputFindings.length > 0 ? "DIFFERENT" : "SAME";
+
+      // Output Ignore Rules: filtered strictly after the real OUTPUT diff is
+      // computed, never before — raw Snapshots/responses and the diff engine
+      // itself are untouched (spec §1). Scoped to this pair's own
+      // project/api, using whatever rule set is enabled right now; an older
+      // completed attempt's own stored findings/result are never revisited
+      // (spec §6).
+      const activeIgnoreRules = await this.ignoreRulesService.listActiveRulesForScope(a.projectId, a.apiId);
+      const { remaining: outputFindingsAfterIgnoreRules, applied: appliedIgnoreRules } = filterIgnoredFindings(outputFindings, activeIgnoreRules);
+      const result = outputFindingsAfterIgnoreRules.length > 0 ? "DIFFERENT" : "SAME";
 
       try {
-        await this.comparisonService.completeAttempt(comparisonAttemptId, result, outputFindings);
+        await this.comparisonService.completeAttempt(comparisonAttemptId, result, outputFindingsAfterIgnoreRules, appliedIgnoreRules);
       } catch (persistErr) {
         // The comparison itself already succeeded (result and findings are
         // fully computed) — only the durable publish failed. Reported
@@ -105,7 +137,7 @@ export class ComparisonEngineService {
     });
   }
 
-  private async loadSnapshotPair(comparisonAttemptId: string): Promise<{ a: SnapshotWithRelations; b: SnapshotWithRelations } | null> {
+  private async loadSnapshotPair(comparisonAttemptId: string): Promise<{ a: SnapshotWithRelations; b: SnapshotWithRelations; sourceKind: string } | null> {
     const attempt = await this.prisma.comparisonAttempt.findUnique({
       where: { comparisonAttemptId },
       select: { comparisonId: true },
@@ -116,7 +148,7 @@ export class ComparisonEngineService {
 
     const comparison = await this.prisma.comparison.findUnique({
       where: { comparisonId: attempt.comparisonId },
-      select: { baselineSnapshotId: true, targetSnapshotId: true },
+      select: { baselineSnapshotId: true, targetSnapshotId: true, sourceKind: true },
     });
     if (!comparison) {
       return null;
@@ -130,7 +162,7 @@ export class ComparisonEngineService {
       return null;
     }
 
-    return { a, b };
+    return { a, b, sourceKind: comparison.sourceKind };
   }
 }
 
@@ -144,6 +176,8 @@ function toEligibilityInput(s: SnapshotWithRelations): EligibilitySnapshotInput 
     hasPayload: s.payload !== null,
     hasRequestHeaders: s.requestHeaders !== null,
     hasResponseHeaders: s.responseHeaders !== null,
+    authType: s.authType,
+    testAccountId: s.testAccountId,
   };
 }
 

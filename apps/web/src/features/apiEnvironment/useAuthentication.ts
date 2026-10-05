@@ -17,22 +17,14 @@ import type {
   PutCredentialPayload,
 } from "./authentication.types"
 
-// Group 3C: canonical Authentication Configuration for one (apiId,
-
-// environmentId) pair. Scoped to the selected Environment, unlike Request
-
-// Input (API-scoped only) — `config` resets to null and re-fetches whenever
-
-// any of projectId/apiId/environmentId changes, so a previous Environment's
-
-// draft/credentialStatus never leaks into the next one. A failed mutation
-
-// leaves `config` untouched, mirroring useRequestInput.ts.
+// REVISION 3C-R02: canonical Authentication Configuration for one Environment,
+// shared by every API in that Environment (Project Settings, not per-API). A
+// previous Environment's draft/credentialStatus never leaks into the next one
+// since `config` resets to null and re-fetches whenever projectId/environmentId
+// changes. A failed mutation leaves `config` untouched, mirroring useRequestInput.ts.
 
 export function useAuthentication(
   projectId: string | null,
-
-  apiId: string | null,
 
   environmentId: string | null,
 
@@ -53,7 +45,7 @@ export function useAuthentication(
   const handleApiError = useApiErrorHandler(onSessionExpired, onAccessDenied)
 
   const refetch = useCallback(async () => {
-    if (!accessToken || !projectId || !apiId || !environmentId) return
+    if (!accessToken || !projectId || !environmentId) return
 
     setLoading(true)
 
@@ -62,7 +54,6 @@ export function useAuthentication(
     try {
       const result = await getAuthenticationConfiguration(
         projectId,
-        apiId,
         environmentId,
         accessToken,
       )
@@ -79,7 +70,7 @@ export function useAuthentication(
     } finally {
       setLoading(false)
     }
-  }, [accessToken, projectId, apiId, environmentId, handleApiError])
+  }, [accessToken, projectId, environmentId, handleApiError])
 
   useEffect(() => {
     setConfig(null)
@@ -91,10 +82,8 @@ export function useAuthentication(
     async (
       payload: PutAuthenticationConfigurationPayload,
     ): Promise<AuthenticationConfiguration> => {
-      if (!accessToken || !projectId || !apiId || !environmentId) {
-        throw new Error(
-          "Missing project, API, Environment, or session context.",
-        )
+      if (!accessToken || !projectId || !environmentId) {
+        throw new Error("Missing project, Environment, or session context.")
       }
 
       setSaving(true)
@@ -102,7 +91,6 @@ export function useAuthentication(
       try {
         const result = await putAuthenticationConfiguration(
           projectId,
-          apiId,
           environmentId,
           payload,
           accessToken,
@@ -120,17 +108,15 @@ export function useAuthentication(
       }
     },
 
-    [accessToken, projectId, apiId, environmentId, handleApiError],
+    [accessToken, projectId, environmentId, handleApiError],
   )
 
   const saveCredential = useCallback(
     async (
       payload: PutCredentialPayload,
     ): Promise<AuthenticationConfiguration> => {
-      if (!accessToken || !projectId || !apiId || !environmentId) {
-        throw new Error(
-          "Missing project, API, Environment, or session context.",
-        )
+      if (!accessToken || !projectId || !environmentId) {
+        throw new Error("Missing project, Environment, or session context.")
       }
 
       setSaving(true)
@@ -138,7 +124,6 @@ export function useAuthentication(
       try {
         const result = await putCredential(
           projectId,
-          apiId,
           environmentId,
           payload,
           accessToken,
@@ -156,15 +141,13 @@ export function useAuthentication(
       }
     },
 
-    [accessToken, projectId, apiId, environmentId, handleApiError],
+    [accessToken, projectId, environmentId, handleApiError],
   )
 
   const removeCredential =
     useCallback(async (): Promise<AuthenticationConfiguration> => {
-      if (!accessToken || !projectId || !apiId || !environmentId) {
-        throw new Error(
-          "Missing project, API, Environment, or session context.",
-        )
+      if (!accessToken || !projectId || !environmentId) {
+        throw new Error("Missing project, Environment, or session context.")
       }
 
       setSaving(true)
@@ -172,7 +155,6 @@ export function useAuthentication(
       try {
         const result = await deleteCredential(
           projectId,
-          apiId,
           environmentId,
           accessToken,
         )
@@ -187,7 +169,7 @@ export function useAuthentication(
       } finally {
         setSaving(false)
       }
-    }, [accessToken, projectId, apiId, environmentId, handleApiError])
+    }, [accessToken, projectId, environmentId, handleApiError])
 
   return {
     config,

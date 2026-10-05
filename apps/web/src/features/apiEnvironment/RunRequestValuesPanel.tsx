@@ -7,6 +7,8 @@ import type {
   RunRequestValues,
 } from "./requestInput.types"
 
+import { Button } from "../../components/ui/Button"
+
 import { Card } from "../../components/ui/Card"
 
 // REVISION 3C-R01 — Run API / Request Values: manual, per-Run Path/Query/
@@ -19,18 +21,36 @@ import { Card } from "../../components/ui/Card"
 
 // holds its own copy and never writes back into the Definition.
 
+// The optional "Save" button (only shown when onSaveDraft is passed — the
+
+// single-Run wizard wires it up, Batch Run Preparation does not) is a
+
+// separate, client-only convenience (see runRequestValuesDraft.util.ts) — it
+
+// echoes the current draft into localStorage so it survives a reload; it
+
+// never touches the Definition or the backend.
+
 export function RunRequestValuesPanel({
   definition,
 
   values,
 
   onChange,
+
+  onSaveDraft,
+
+  justSavedDraft = false,
 }: {
   definition: RequestInputDefinition
 
   values: RunRequestValues
 
   onChange: (values: RunRequestValues) => void
+
+  onSaveDraft?: () => void
+
+  justSavedDraft?: boolean
 }) {
   const hasConfigurableInputs =
     definition.pathParameters.length > 0 ||
@@ -69,9 +89,22 @@ export function RunRequestValuesPanel({
 
   return (
     <Card>
-      <h3 className="m-0 mb-3 text-base font-semibold text-gray-900">
-        Request Values
-      </h3>
+      <div className="mb-3 flex items-center justify-between">
+        <h3 className="m-0 text-base font-semibold text-gray-900">
+          Request Values
+        </h3>
+        {onSaveDraft && (
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={!hasConfigurableInputs}
+            onClick={onSaveDraft}
+            title="Save these values in this browser so they're restored next time you open this API's Run tab"
+          >
+            {justSavedDraft ? "Saved!" : "Save"}
+          </Button>
+        )}
+      </div>
       <div className="flex flex-col gap-4">
         {!hasConfigurableInputs && (
           <p className="m-0 text-sm text-muted">

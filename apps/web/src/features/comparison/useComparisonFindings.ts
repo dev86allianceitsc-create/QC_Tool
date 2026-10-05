@@ -22,6 +22,7 @@ export function useComparisonFindings(
   accessToken: string | null,
   onSessionExpired: () => void,
   onAccessDenied: () => void,
+  parentProcessingStatus: ComparisonProcessingStatus | null,
 ) {
   const [items, setItems] = useState<ComparisonFindingItemDto[]>([])
   const [page, setPage] = useState(1)
@@ -62,7 +63,12 @@ export function useComparisonFindings(
 
   useEffect(() => {
     void refetch()
-  }, [refetch])
+    // parentProcessingStatus: the header (useComparisonDetail) polls this
+    // Comparison independently of this tab — re-fetch findings whenever it
+    // changes so a tab left open on "Still processing" updates once the
+    // parent observes a terminal status, instead of only refetching on
+    // mount/page/phase change.
+  }, [refetch, parentProcessingStatus])
 
   useEffect(() => {
     setPage(1)

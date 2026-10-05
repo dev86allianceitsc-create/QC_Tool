@@ -7,11 +7,12 @@ import { useApiErrorHandler } from "../shared/useApiErrorHandler"
 import {
   confirmOpenApiImport,
   createApi as createApiRequest,
+  importCurlFetchApi,
   listApis,
   previewOpenApiImport,
 } from "./apiEnvironment.api"
 
-import type { ApiListItem } from "./apiEnvironment.types"
+import type { ApiDetail, ApiListItem, ImportCurlFetchPayload } from "./apiEnvironment.types"
 
 const PAGE_SIZE = 100
 
@@ -109,6 +110,20 @@ export function useApiList(
     [accessToken, projectId, refetch],
   )
 
+  const importCurlFetch = useCallback(
+    async (payload: ImportCurlFetchPayload): Promise<ApiDetail> => {
+      if (!accessToken || !projectId) throw new Error("Not ready")
+
+      const created = await importCurlFetchApi(projectId, payload, accessToken)
+
+      await refetch()
+
+      return created
+    },
+
+    [accessToken, projectId, refetch],
+  )
+
   return {
     apis,
     loading,
@@ -117,5 +132,6 @@ export function useApiList(
     createApi,
     importPreview,
     importConfirm,
+    importCurlFetch,
   }
 }

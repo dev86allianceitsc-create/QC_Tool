@@ -1,11 +1,14 @@
 import { HttpStatus, Injectable } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
+import { BusinessException } from "../../common/exceptions/business.exception";
 import { AuditWriterService } from "../audit/audit-writer.service";
-import { assertProjectActive, isUniqueConstraintError } from "./apis.service";
+import { ApiDetail, assertProjectActive, isUniqueConstraintError } from "./apis.service";
+import { ImportCurlFetchDto } from "./dto/import-curl-fetch.dto";
 import { ImportOpenApiDto } from "./dto/import-openapi.dto";
 import { UploadedMulterFile } from "./uploaded-file.type";
-import { isSupportedHttpMethod } from "./http-method.constants";
+import { assertSupportedHttpMethod, isSupportedHttpMethod } from "./http-method.constants";
 import { candidateKey, ExtractedImportWarning, extractCandidates, parseOpenApiFile } from "./openapi-import.util";
+import { assertNoDuplicateNames, isReservedHeaderName, validateParameterNameFormat } from "./request-input-validation.util";
 
 export type PreviewCandidateStatus = "VALID" | "DUPLICATE" | "INVALID";
 
@@ -217,5 +220,109 @@ export class ApiImportsService {
     }
 
     return { results, summary: { imported, skipped, failed } };
+  }
+
+  // Phase 2 (customer feedback #1) importApiFromCurlFetch. Unlike the
+  // Swagger flow above, parsing already happened client-side and the user
+  // has reviewed/edited the result — this is a single, already-confirmed
+  // candidate, so it creates the API core row and its Request Input
+  // atomically in one transaction (no preview/multi-candidate batch).
+  // Query/header name validation runs before the transaction opens, mirroring
+  // RequestInputService.replace().
+  async importFromCurlFetch(projectId: string, dto: ImportCurlFetchDto, actorUserId: string): Promise<ApiDetail> {
+    assertSupportedHttpMethod(dto.httpMethod);
+
+    for (const param of dto.queryParameters) {
+      validateParameterNameFormat(param.name, "QUERY");
+    }
+    assertNoDuplicateNames(
+      dto.queryParameters.map((p) => p.name),
+      "QUERY",
+    );
+
+    for (const param of dto.headerParameters) {
+      validateParameterNameFormat(param.name, "HEADER");
+      if (isReservedHeaderName(param.name)) {
+        throw new BusinessException(HttpStatus.UNPROCESSABLE_ENTITY, "SEMANTIC_VALIDATION_ERROR", `Header parameter name '${param.name}' is reserved and cannot be configured as a normal Header`);
+      }
+    }
+    assertNoDuplicateNames(
+      dto.headerParameters.map((p) => p.name),
+      "HEADER",
+    );
+
+    return this.prisma.$transaction(async (tx) => {
+      await assertProjectActive(tx, projectId);
+
+      const duplicate = await tx.apiConfiguration.findFirst({
+        where: { projectId, httpMethod: dto.httpMethod, path: dto.path, deletedAt: null },
+      });
+      if (duplicate) {
+        throw new BusinessException(HttpStatus.CONFLICT, "API_ALREADY_EXISTS", "An active API with this Method and Path already exists in this Project");
+      }
+
+      let created;
+      try {
+        created = await tx.apiConfiguration.create({
+          data: {
+            projectId,
+            apiName: dto.apiName,
+            httpMethod: dto.httpMethod,
+            path: dto.path,
+            description: dto.description ?? null,
+            creationSource: "CURL_IMPORT",
+          },
+        });
+      } catch (err) {
+        if (isUniqueConstraintError(err)) {
+          throw new BusinessException(HttpStatus.CONFLICT, "API_ALREADY_EXISTS", "An active API with this Method and Path already exists in this Project");
+        }
+        throw err;
+      }
+
+      if (dto.queryParameters.length > 0 || dto.headerParameters.length > 0) {
+        await tx.requestParameterDefinition.createMany({
+          data: [
+            ...dto.queryParameters.map((p) => ({ apiId: created.apiId, location: "QUERY", parameterName: p.name, isRequired: p.required })),
+            ...dto.headerParameters.map((p) => ({ apiId: created.apiId, location: "HEADER", parameterName: p.name, isRequired: p.required })),
+          ],
+        });
+      }
+      if (dto.requestBody) {
+        await tx.requestBodyDefinition.create({ data: { apiId: created.apiId, bodyType: dto.requestBody.bodyType } });
+      }
+
+      await this.auditWriter.record(
+        {
+          eventType: "API_IMPORTED",
+          result: "SUCCESS",
+          actorUserId,
+          targetType: "API_CONFIGURATION",
+          targetId: created.apiId,
+          targetDisplay: created.apiName,
+          projectId,
+          afterData: {
+            apiName: created.apiName,
+            httpMethod: created.httpMethod,
+            path: created.path,
+            creationSource: created.creationSource,
+            requestInputCounts: { query: dto.queryParameters.length, header: dto.headerParameters.length, body: dto.requestBody ? 1 : 0 },
+          },
+        },
+        tx,
+      );
+
+      return {
+        apiId: created.apiId,
+        projectId: created.projectId,
+        apiName: created.apiName,
+        httpMethod: created.httpMethod,
+        path: created.path,
+        description: created.description,
+        creationSource: created.creationSource,
+        createdAt: created.createdAt,
+        updatedAt: created.updatedAt,
+      };
+    });
   }
 }

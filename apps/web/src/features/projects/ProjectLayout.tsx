@@ -36,6 +36,8 @@ const SETTINGS_TABS = [
   { key: "environments", label: "Environments", path: "/environments" },
 
   { key: "members", label: "Members", path: "/members" },
+
+  { key: "ignore-rules", label: "Ignore Rules", path: "/ignore-rules" },
 ] as const
 
 const TAB_CLASS =

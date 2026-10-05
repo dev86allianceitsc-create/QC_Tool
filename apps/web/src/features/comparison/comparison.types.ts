@@ -16,6 +16,7 @@ export type ComparisonFindingPhase = "INPUT" | "OUTPUT"
 export type ComparisonClassificationValue = "EXPECTED" | "UNEXPECTED"
 export type ComparisonAvailabilityReasonCode = "NO_LATEST_SNAPSHOT" | "NO_BASELINE" | "BASELINE_INVALIDATED"
 export type ComparisonInputCheckOutcome = "COMPATIBLE" | "MISMATCH"
+export type ComparisonAttemptTriggerKind = "INITIAL" | "RETRY" | "REEVALUATION"
 
 export const COMPARISON_CLASSIFICATION_NOTE_MAX_LENGTH = 2000
 
@@ -73,6 +74,7 @@ export interface AppliedRuleSummaryDto {
   ruleManifestVersion: string
   representationBoundary: string
   exclusionCount: number
+  ignoreRuleCount: number
 }
 
 export interface ComparisonDetailDto extends ComparisonSummaryDto {
@@ -130,6 +132,7 @@ export interface ComparisonFindingsResult {
 export interface ComparisonAttemptListItemDto {
   comparisonAttemptId: string
   attemptNumber: number
+  triggerKind: ComparisonAttemptTriggerKind
   processingStatus: ComparisonProcessingStatus
   stoppedAtGate: string | null
   reasonCode: string | null
@@ -192,6 +195,13 @@ export interface RetryComparisonResultDto {
   comparisonAttemptId: string
   attemptNumber: number
   processingStatus: "QUEUED"
+}
+
+export interface ReevaluateComparisonResultDto {
+  comparisonAttemptId: string
+  attemptNumber: number
+  processingStatus: ComparisonProcessingStatus
+  result: ComparisonResult | null
 }
 
 export interface ClassificationEventResultDto {

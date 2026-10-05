@@ -33,4 +33,13 @@ export class UpdateEnvironmentDto {
   @IsOptional()
   @IsIn(ENVIRONMENT_STATUS_VALUES)
   environmentStatus?: EnvironmentStatusValue;
+
+  // Phase 1 domain binding (customer feedback #2). Omitted = unchanged; an
+  // explicit empty string clears baseUrl back to null (EnvironmentsService.update).
+  @ApiPropertyOptional({ maxLength: 2048, description: "Domain-only base URL (no path/query/fragment); empty string clears it" })
+  @IsOptional()
+  @Transform(({ value }) => (typeof value === "string" ? value.trim() : value))
+  @IsString()
+  @MaxLength(2048)
+  baseUrl?: string;
 }

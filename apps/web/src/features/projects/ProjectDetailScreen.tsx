@@ -12,11 +12,23 @@ import { StatusBadge } from "./StatusBadge"
 
 import { useProjectDetail } from "./useProjectDetail"
 
+import { useProjectOverviewExtras } from "./useProjectOverviewExtras"
+
+import { Badge } from "../../components/ui/Badge"
+
 import { Button } from "../../components/ui/Button"
+
+import { Card } from "../../components/ui/Card"
 
 import { Input, Textarea } from "../../components/ui/Input"
 
 import { Modal } from "../../components/ui/Modal"
+
+const ENVIRONMENTS_DISPLAY_LIMIT = 5
+
+function formatDateTime(value: string) {
+  return new Date(value).toLocaleString()
+}
 
 // UI-PRJ-03/04/05/06: display fields for both roles; Edit/Activate-Deactivate/
 
@@ -38,6 +50,10 @@ export function ProjectDetailScreen({
   onSessionExpired,
 
   onAccessDenied,
+
+  onNavigateToMembers,
+
+  onNavigateToEnvironments,
 }: {
   user: { email: string; role: Role }
 
@@ -50,6 +66,10 @@ export function ProjectDetailScreen({
   onSessionExpired: () => void
 
   onAccessDenied: () => void
+
+  onNavigateToMembers: () => void
+
+  onNavigateToEnvironments: () => void
 }) {
   const isAdmin = user.role === "ADMIN"
 
@@ -59,6 +79,14 @@ export function ProjectDetailScreen({
     onSessionExpired,
     onAccessDenied,
   )
+
+  const { data: overview, loading: overviewLoading } =
+    useProjectOverviewExtras(
+      projectId,
+      accessToken,
+      onSessionExpired,
+      onAccessDenied,
+    )
 
   const [showEditModal, setShowEditModal] = useState(false)
 
@@ -180,6 +208,9 @@ export function ProjectDetailScreen({
           <p className="mt-2 max-w-2xl text-sm text-muted">
             {project.description || "No description provided."}
           </p>
+          <p className="mt-2 text-xs text-muted">
+            Created {formatDateTime(project.createdAt)}
+          </p>
         </div>
         {isAdmin && (
           <div className="flex shrink-0 gap-2.5">
@@ -216,6 +247,82 @@ export function ProjectDetailScreen({
             </Button>
           </div>
         )}
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 p-6 sm:grid-cols-2">
+        <Card>
+          <div className="flex items-center justify-between">
+            <h3 className="m-0 text-sm font-semibold text-gray-900">Team</h3>
+            <Button variant="ghost" size="sm" onClick={onNavigateToMembers}>
+              Manage →
+            </Button>
+          </div>
+          {overviewLoading ? (
+            <p className="mt-3 text-sm text-muted">Loading...</p>
+          ) : (
+            <>
+              <p className="mt-3 text-3xl font-semibold text-gray-900">
+                {overview?.membersTotal ?? "—"}
+              </p>
+              <p className="mt-1 text-xs text-muted">
+                {overview
+                  ? `${overview.adminCount} Admin · ${overview.userCount} User`
+                  : "Unable to load members."}
+              </p>
+            </>
+          )}
+        </Card>
+
+        <Card>
+          <div className="flex items-center justify-between">
+            <h3 className="m-0 text-sm font-semibold text-gray-900">
+              Environments
+            </h3>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onNavigateToEnvironments}
+            >
+              Manage →
+            </Button>
+          </div>
+          {overviewLoading ? (
+            <p className="mt-3 text-sm text-muted">Loading...</p>
+          ) : overview && overview.environments.length > 0 ? (
+            <>
+              <ul className="m-0 mt-3 list-none space-y-1.5 p-0">
+                {overview.environments
+                  .slice(0, ENVIRONMENTS_DISPLAY_LIMIT)
+                  .map((env) => (
+                    <li
+                      key={env.environmentId}
+                      className="flex items-center justify-between gap-2 text-sm"
+                    >
+                      <span className="truncate text-gray-900">
+                        {env.environmentName}
+                      </span>
+                      <Badge
+                        tone={env.allowRun ? "success" : "neutral"}
+                        label={env.allowRun ? "Run allowed" : "Run disabled"}
+                      />
+                    </li>
+                  ))}
+              </ul>
+              {overview.environmentsTotal > ENVIRONMENTS_DISPLAY_LIMIT && (
+                <p className="mt-2 text-xs text-muted">
+                  +{overview.environmentsTotal - ENVIRONMENTS_DISPLAY_LIMIT}{" "}
+                  more
+                </p>
+              )}
+            </>
+          ) : (
+            <p className="mt-3 text-sm text-muted">
+              {overview
+                ? "No environments configured yet."
+                : "Unable to load environments."}
+            </p>
+          )}
+        </Card>
       </div>
 
       {showEditModal && (

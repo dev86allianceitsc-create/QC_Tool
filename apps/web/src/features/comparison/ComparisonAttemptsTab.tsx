@@ -7,18 +7,24 @@ import { formatTimestamp } from "../apiEnvironment/ExecutionResultView"
 import {
   getProcessingStatusDisplay,
   getResultDisplay,
+  getTriggerKindLabel,
 } from "./comparison-format.util"
 import type { ComparisonDetailDto } from "./comparison.types"
 import { useComparisonAttempts } from "./useComparisonAttempts"
 
-const TERMINAL_STATUSES = new Set(["BLOCKED", "FAILED", "COMPLETED"])
+// Retry only ever re-runs a terminal non-COMPLETED attempt (BLOCKED/FAILED —
+// retryComparisonAttempt rejects COMPLETED with ALREADY_COMPLETED); COMPLETED
+// has its own correct action (Re-evaluate, surfaced on the Detail screen's
+// header), so Retry is intentionally not offered there.
+const RETRYABLE_STATUSES = new Set(["BLOCKED", "FAILED"])
 
 // Tab 4 of Comparison Detail (plan Flow 3/UI-CMP-03). Retry is shown whenever
 // the Comparison's own processingStatus (which mirrors its latest attempt —
-// comparison-query.service.ts's buildComparisonSummary) is terminal — never
-// hidden by mirroring the backend's 11-entry COMPARISON_ATTEMPT_RETRY_POLICY
-// client-side (deviation #5); a rejected retry surfaces the server's 409
-// message instead of predicting rejection ahead of time.
+// comparison-query.service.ts's buildComparisonSummary) is terminal and
+// non-COMPLETED — never hidden by mirroring the backend's 11-entry
+// COMPARISON_ATTEMPT_RETRY_POLICY client-side (deviation #5); a rejected
+// retry surfaces the server's 409 message instead of predicting rejection
+// ahead of time.
 export function ComparisonAttemptsTab({
   comparison,
   accessToken,
@@ -51,7 +57,7 @@ export function ComparisonAttemptsTab({
   const [retrying, setRetrying] = useState(false)
   const [retryError, setRetryError] = useState<string | null>(null)
 
-  const canRetry = TERMINAL_STATUSES.has(comparison.processingStatus)
+  const canRetry = RETRYABLE_STATUSES.has(comparison.processingStatus)
 
   async function handleRetry() {
     setRetrying(true)
@@ -113,6 +119,7 @@ export function ComparisonAttemptsTab({
               <thead>
                 <tr>
                   <th className={thClass}>Attempt</th>
+                  <th className={thClass}>Trigger</th>
                   <th className={thClass}>Status</th>
                   <th className={thClass}>Result</th>
                   <th className={thClass}>Stopped at</th>
@@ -137,6 +144,9 @@ export function ComparisonAttemptsTab({
                       className={trHoverClass}
                     >
                       <td className={tdClass}>#{attempt.attemptNumber}</td>
+                      <td className={tdClass}>
+                        {getTriggerKindLabel(attempt.triggerKind)}
+                      </td>
                       <td className={tdClass}>
                         <Badge
                           tone={statusDisplay.tone}

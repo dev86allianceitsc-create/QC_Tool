@@ -2,16 +2,22 @@ import { Injectable } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { AuditWriterService } from "../audit/audit-writer.service";
-import { computeAuthContextKey } from "../snapshot/auth-context-fingerprint.util";
+import { AppliedIgnoreRuleRecord } from "../ignore-rules/ignore-rule-path-matcher.util";
 import { COMPARISON_ATTEMPT_RETRY_POLICY, ComparisonAttemptReasonCode, DEFAULT_APPLIED_RULE_MANIFEST } from "./comparison.constants";
 
+// Phase 3 Test Case History & Run Again: scoped purely by testCaseKey
+// (computeTestCaseKey — apiId+environmentId+authType+testAccountId+
+// normalized raw input), deliberately NOT by authContextKey. This is
+// concept A (Test Case Identity) only — "is this logically the same
+// test?" — kept independent of concept B (Comparison Eligibility/Safety),
+// which still checks authContextKey compatibility on whatever candidate
+// this finds (comparison-eligibility.util.ts). A baseline across an
+// auth-context-version change is still selected here; whether the
+// resulting pair can actually be compared is decided later, by
+// ELIGIBILITY.
 export interface BaselineSelectionInput {
   projectId: string;
-  apiId: string;
-  environmentId: string;
-  authType: string;
-  authContextVersion: number;
-  authIdentityLabel: string | null;
+  testCaseKey: string;
 }
 
 export interface BaselineSnapshotRef {
@@ -25,6 +31,10 @@ export interface AutomaticComparisonInput {
   environmentId: string;
   baselineSnapshotId: string;
   targetSnapshotId: string;
+  // Advanced "Re-run this execution" (§5) is the only caller that ever passes
+  // "RERUN_EXECUTION" — ordinary Run Again/Run API dispatch (auto-chained via
+  // testCaseKey, concept A) always takes the default.
+  sourceKind?: "AUTO_EXECUTION" | "RERUN_EXECUTION";
 }
 
 // API-CMP-001 (AnD API v0.2 §3): MANUAL_PAIR and BASELINE_LATEST both call
@@ -71,6 +81,14 @@ export interface CreateChainResult {
 export type RetryComparisonOutcome =
   | { ok: true; comparisonAttemptId: string; attemptNumber: number }
   | { ok: false; code: "COMPARISON_NOT_FOUND" | "ALREADY_COMPLETED" | "ATTEMPT_NOT_TERMINAL" | "REASON_NOT_RETRYABLE" | "CONCURRENT_RETRY" };
+
+// Re-evaluate deliberately has no "reason retryable" concept — it only ever
+// recomputes gates purely from stored data (same Snapshots, current Ignore
+// Rules), so the only precondition is that the latest attempt already
+// reached a final answer to recompute from.
+export type ReevaluateAttemptOutcome =
+  | { ok: true; comparisonAttemptId: string; attemptNumber: number }
+  | { ok: false; code: "COMPARISON_NOT_FOUND" | "LATEST_ATTEMPT_NOT_COMPLETED" | "CONCURRENT_REEVALUATION" };
 
 export interface ComparisonFindingInput {
   phase: "INPUT" | "OUTPUT";
@@ -145,22 +163,17 @@ export class ComparisonService {
     private readonly auditWriter: AuditWriterService,
   ) {}
 
-  // CMP-003/013 (AnD Section 4.1): the most recent non-invalidated Snapshot in
-  // the same Project/API/Environment/auth-context scope, or null when none
-  // exists yet. Called once, right before dispatch — the result is persisted
-  // immediately by the caller (RunExecution.baselineSnapshotId/
-  // baselineSelectedAt) and never reselected afterward, even if a newer
-  // Snapshot appears later (RS-CMP-016-09).
+  // CMP-003/013 (AnD Section 4.1): the most recent non-invalidated Snapshot
+  // sharing this testCaseKey, or null when none exists yet. Called once,
+  // right before dispatch — the result is persisted immediately by the
+  // caller (RunExecution.baselineSnapshotId/baselineSelectedAt) and never
+  // reselected afterward, even if a newer Snapshot appears later
+  // (RS-CMP-016-09).
   async selectBaselineSnapshot(input: BaselineSelectionInput): Promise<BaselineSnapshotRef | null> {
-    const identityDiscriminator = input.authType === "LOGIN_FORM" ? (input.authIdentityLabel ?? "") : "";
-    const authContextKey = computeAuthContextKey(input.apiId, input.environmentId, input.authType, input.authContextVersion, identityDiscriminator);
-
     return this.prisma.snapshot.findFirst({
       where: {
         projectId: input.projectId,
-        apiId: input.apiId,
-        environmentId: input.environmentId,
-        authContextKey,
+        testCaseKey: input.testCaseKey,
         invalidation: null,
       },
       orderBy: [{ completedAt: "desc" }, { snapshotId: "desc" }],
@@ -190,7 +203,7 @@ export class ComparisonService {
             environmentId: input.environmentId,
             baselineSnapshotId: input.baselineSnapshotId,
             targetSnapshotId: input.targetSnapshotId,
-            sourceKind: "AUTO_EXECUTION",
+            sourceKind: input.sourceKind ?? "AUTO_EXECUTION",
             sourceExecutionId: input.runExecutionId,
           },
         });
@@ -207,6 +220,7 @@ export class ComparisonService {
               comparisonId: comparison.comparisonId,
               attemptNumber: 1,
               processingStatus: "BLOCKED",
+              triggerKind: "INITIAL",
               stoppedAtGate: "ELIGIBILITY",
               reasonCode: "SNAPSHOT_INVALIDATED",
               appliedRuleManifest: DEFAULT_APPLIED_RULE_MANIFEST,
@@ -222,6 +236,7 @@ export class ComparisonService {
             comparisonId: comparison.comparisonId,
             attemptNumber: 1,
             processingStatus: "QUEUED",
+            triggerKind: "INITIAL",
             appliedRuleManifest: DEFAULT_APPLIED_RULE_MANIFEST,
           },
         });
@@ -285,6 +300,7 @@ export class ComparisonService {
           comparisonId: comparison.comparisonId,
           attemptNumber: 1,
           processingStatus: "BLOCKED",
+          triggerKind: "INITIAL",
           stoppedAtGate: "ELIGIBILITY",
           reasonCode: "SNAPSHOT_INVALIDATED",
           appliedRuleManifest: DEFAULT_APPLIED_RULE_MANIFEST,
@@ -300,6 +316,7 @@ export class ComparisonService {
         comparisonId: comparison.comparisonId,
         attemptNumber: 1,
         processingStatus: "QUEUED",
+        triggerKind: "INITIAL",
         appliedRuleManifest: DEFAULT_APPLIED_RULE_MANIFEST,
       },
     });
@@ -443,6 +460,7 @@ export class ComparisonService {
             comparisonId,
             attemptNumber: latest.attemptNumber + 1,
             processingStatus: "QUEUED",
+            triggerKind: "RETRY",
             appliedRuleManifest: DEFAULT_APPLIED_RULE_MANIFEST,
           },
         });
@@ -459,6 +477,53 @@ export class ComparisonService {
     }
   }
 
+  // Auditable Re-evaluation: unlike retryComparisonAttempt (which only ever
+  // acts on a terminal non-COMPLETED attempt), this deliberately requires
+  // the latest attempt to already be COMPLETED — a mid-flight or
+  // blocked/failed attempt is Retry's job, not this one's. The new attempt
+  // is appended exactly like a retry (attemptNumber + 1, same
+  // uq_comparison_attempts_comparison_id_attempt_number race protection),
+  // but tagged REEVALUATION so uq_comparison_attempts_completed_per_comparison
+  // (narrowed to WHERE trigger_kind <> 'REEVALUATION') never blocks it even
+  // though a COMPLETED attempt already exists for this Comparison. The
+  // original COMPLETED attempt is never read-modified — ComparisonEngineService
+  // .processAttempt only ever touches the new attempt row, by id.
+  async reevaluateComparisonAttempt(comparisonId: string): Promise<ReevaluateAttemptOutcome> {
+    try {
+      return await this.prisma.$transaction(async (tx): Promise<ReevaluateAttemptOutcome> => {
+        const latest = await tx.comparisonAttempt.findFirst({
+          where: { comparisonId },
+          orderBy: { attemptNumber: "desc" },
+        });
+        if (!latest) {
+          return { ok: false, code: "COMPARISON_NOT_FOUND" };
+        }
+        if (latest.processingStatus !== "COMPLETED") {
+          return { ok: false, code: "LATEST_ATTEMPT_NOT_COMPLETED" };
+        }
+
+        const created = await tx.comparisonAttempt.create({
+          data: {
+            comparisonId,
+            attemptNumber: latest.attemptNumber + 1,
+            processingStatus: "QUEUED",
+            triggerKind: "REEVALUATION",
+            appliedRuleManifest: DEFAULT_APPLIED_RULE_MANIFEST,
+          },
+        });
+        return { ok: true, comparisonAttemptId: created.comparisonAttemptId, attemptNumber: created.attemptNumber };
+      });
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+        // uq_comparison_attempts_comparison_id_attempt_number race — two
+        // concurrent re-evaluations both read the same "latest" attempt as
+        // their base.
+        return { ok: false, code: "CONCURRENT_REEVALUATION" };
+      }
+      throw err;
+    }
+  }
+
   // Atomic Result+Detail publish (CMP-007/008/CMP-015..018): a QUEUED/RUNNING
   // attempt transitions to COMPLETED with its SAME/DIFFERENT result and every
   // finding in the same transaction — never a partial state where a result
@@ -467,7 +532,22 @@ export class ComparisonService {
   // via a different, earlier BLOCKED path — never this method), so
   // inputCheckOutcome is set here too rather than left NULL. Terminal
   // attempts (BLOCKED/FAILED/COMPLETED) are never overwritten.
-  async completeAttempt(comparisonAttemptId: string, result: "SAME" | "DIFFERENT", findings: ComparisonFindingInput[]): Promise<CompleteAttemptOutcome> {
+  //
+  // appliedIgnoreRules (Output Ignore Rules): purely additive audit trail —
+  // the engine has already filtered `findings` down to what's NOT suppressed
+  // before calling this, so result/findings alone are already correct either
+  // way. When non-empty, folded into appliedRuleManifest.ignoreRules on this
+  // one attempt only — never rewrites any other attempt's manifest, which is
+  // how "adding/enabling/disabling a rule never silently rewrites historical
+  // completed Comparisons" (spec §6) holds: only an attempt processed AFTER
+  // the rule changed ever sees it, and only that attempt's own manifest row
+  // records it.
+  async completeAttempt(
+    comparisonAttemptId: string,
+    result: "SAME" | "DIFFERENT",
+    findings: ComparisonFindingInput[],
+    appliedIgnoreRules: AppliedIgnoreRuleRecord[] = [],
+  ): Promise<CompleteAttemptOutcome> {
     return this.prisma.$transaction(async (tx): Promise<CompleteAttemptOutcome> => {
       const attempt = await tx.comparisonAttempt.findUnique({ where: { comparisonAttemptId } });
       if (!attempt) {
@@ -479,7 +559,15 @@ export class ComparisonService {
 
       await tx.comparisonAttempt.update({
         where: { comparisonAttemptId },
-        data: { processingStatus: "COMPLETED", comparisonResult: result, inputCheckOutcome: "COMPATIBLE", endedAt: new Date() },
+        data: {
+          processingStatus: "COMPLETED",
+          comparisonResult: result,
+          inputCheckOutcome: "COMPATIBLE",
+          endedAt: new Date(),
+          ...(appliedIgnoreRules.length > 0
+            ? { appliedRuleManifest: { ...DEFAULT_APPLIED_RULE_MANIFEST, ignoreRules: appliedIgnoreRules } as unknown as Prisma.InputJsonValue }
+            : {}),
+        },
       });
 
       await this.createFindingRows(tx, comparisonAttemptId, findings);
@@ -572,17 +660,24 @@ export class ComparisonService {
     });
   }
 
-  // CMP-002 (Should): append-only, only ever accepted once the Comparison has
-  // a COMPLETED/DIFFERENT attempt, guarded by an optimistic expectedRevision
-  // check backed by uq_comparison_classification_events_comparison_id_revision
-  // — never an update to a prior event (AnD Section 4.6: absence means "not
-  // yet classified", there is no CLEAR value).
+  // CMP-002 (Should): append-only, only ever accepted once the Comparison's
+  // CURRENT (latest-attempt) result is COMPLETED/DIFFERENT — not merely "some
+  // attempt in its history was COMPLETED/DIFFERENT". Before Re-evaluation
+  // existed this distinction was moot (at most one COMPLETED attempt could
+  // ever exist), but a REEVALUATION attempt can now flip a stale DIFFERENT
+  // into a current SAME, so this must check the latest attempt specifically
+  // or a comparison could stay wrongly classifiable against a result that no
+  // longer holds. Guarded by an optimistic expectedRevision check backed by
+  // uq_comparison_classification_events_comparison_id_revision — never an
+  // update to a prior event (AnD Section 4.6: absence means "not yet
+  // classified", there is no CLEAR value).
   async recordClassification(comparisonId: string, input: RecordClassificationInput): Promise<ClassificationOutcome> {
     try {
       return await this.prisma.$transaction(async (tx): Promise<ClassificationOutcome> => {
-        const completedDifferent = await tx.comparisonAttempt.findFirst({
-          where: { comparisonId, processingStatus: "COMPLETED", comparisonResult: "DIFFERENT" },
-          select: { comparisonAttemptId: true },
+        const latestAttempt = await tx.comparisonAttempt.findFirst({
+          where: { comparisonId },
+          orderBy: { attemptNumber: "desc" },
+          select: { comparisonAttemptId: true, processingStatus: true, comparisonResult: true },
         });
         const latestEvent = await tx.comparisonClassificationEvent.findFirst({
           where: { comparisonId },
@@ -591,7 +686,8 @@ export class ComparisonService {
         });
         const currentRevision = latestEvent?.revision ?? 0;
 
-        if (!completedDifferent) {
+        const isCompletedDifferent = latestAttempt?.processingStatus === "COMPLETED" && latestAttempt.comparisonResult === "DIFFERENT";
+        if (!isCompletedDifferent) {
           return { ok: false, code: "NOT_CLASSIFIABLE", currentRevision };
         }
         const expected = input.expectedRevision ?? 0;

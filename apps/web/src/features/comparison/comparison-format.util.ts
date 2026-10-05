@@ -1,5 +1,6 @@
 import type { BadgeTone } from "../../components/ui/Badge"
 import type {
+  ComparisonAttemptTriggerKind,
   ComparisonAvailabilityReasonCode,
   ComparisonClassificationValue,
   ComparisonInputCheckOutcome,
@@ -9,6 +10,7 @@ import type {
   FindingDisplayKind,
   FindingLocationDto,
   FindingPresenceKind,
+  FindingSideDto,
 } from "./comparison.types"
 
 // Single source of truth for Comparison label/tone/format text — every
@@ -70,7 +72,7 @@ export function getResultDisplay(
 ): StatusDisplay | null {
   if (processingStatus !== "COMPLETED" || !result) return null
   return result === "SAME"
-    ? { label: "SAME", tone: "success" }
+    ? { label: "SAME", tone: "warning" }
     : { label: "DIFFERENT", tone: "danger" }
 }
 
@@ -138,6 +140,21 @@ export function getAvailabilityReasonMessage(
   }
 }
 
+// Attempts tab's "Trigger" column — distinguishes the original run from a
+// Retry re-run and from a data-only Re-evaluate (no API-under-test call).
+export function getTriggerKindLabel(
+  triggerKind: ComparisonAttemptTriggerKind,
+): string {
+  switch (triggerKind) {
+    case "INITIAL":
+      return "Initial run"
+    case "RETRY":
+      return "Retry"
+    case "REEVALUATION":
+      return "Re-evaluated"
+  }
+}
+
 export function getInputCheckOutcomeLabel(
   outcome: ComparisonInputCheckOutcome | null,
 ): string {
@@ -165,6 +182,46 @@ export function getFindingPresenceLabel(
     case "VALUE":
       return "Has value"
   }
+}
+
+// Once a side actually renders its real content box (VALUE with a non-null
+// safeText/hexPreview — the normal case now that findings carry re-derived
+// evidence instead of a hardcoded placeholder), the generic presence label
+// above it ("Has value") is redundant and reads like a second, contradictory
+// value. The label still carries real information for ABSENT/NULL/EMPTY (no
+// content box follows it) and for the rare VALUE side with no derivable text
+// at all, so it is only suppressed in the one case where it would duplicate
+// what the content box already shows.
+export function shouldShowSidePresenceLabel(side: FindingSideDto): boolean {
+  return !(side.presenceKind === "VALUE" && (side.safeText !== null || side.hexPreview !== null))
+}
+
+const MAX_DIFFERENCE_SUMMARY_LENGTH = 120
+
+function sideSummaryText(side: FindingSideDto): string {
+  if (side.presenceKind === "VALUE") {
+    return side.safeText ?? side.hexPreview ?? getFindingPresenceLabel(side.presenceKind, side.displayKind)
+  }
+  return getFindingPresenceLabel(side.presenceKind, side.displayKind)
+}
+
+// A one-line "A → B" summary of what actually changed, for the (goal #5)
+// "what kind of difference is this" question a reader would otherwise have
+// to work out by comparing the two side boxes themselves. Never invents a
+// comparison across a protected value's real bytes — a redacted side always
+// collapses this to the fixed, contract-mandated phrase instead ("Difference
+// detected in protected value"), even though its safeText already literally
+// reads "[REDACTED]" on both sides. Skipped entirely for very long/multiline
+// content (bodies), where a single-line arrow would be unreadable and the two
+// content boxes above already show the real values in full.
+export function getFindingDifferenceSummary(a: FindingSideDto, b: FindingSideDto): string | null {
+  if (a.isRedacted || b.isRedacted) return "Difference detected in protected value"
+  const aText = sideSummaryText(a)
+  const bText = sideSummaryText(b)
+  if (aText === bText) return null
+  if (aText.includes("\n") || bText.includes("\n")) return null
+  if (aText.length > MAX_DIFFERENCE_SUMMARY_LENGTH || bText.length > MAX_DIFFERENCE_SUMMARY_LENGTH) return null
+  return `Difference: ${aText} → ${bText}`
 }
 
 // §5.2's "Kiểu khác" (different type) is a cross-side comparison, not a

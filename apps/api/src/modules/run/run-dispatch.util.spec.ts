@@ -1,4 +1,4 @@
-import { redactHeaders, toSnapshotRequestHeaderPairs, toSnapshotResponseHeaderPairs } from "./run-dispatch.util";
+import { findAccessToken, redactHeaders, setHeader, setHeaderIfAbsent, toSnapshotRequestHeaderPairs, toSnapshotResponseHeaderPairs } from "./run-dispatch.util";
 
 describe("toSnapshotRequestHeaderPairs", () => {
   it("preserves the Record's own key insertion order", () => {
@@ -77,5 +77,92 @@ describe("toSnapshotResponseHeaderPairs", () => {
 
   it("returns an empty array for no headers", () => {
     expect(toSnapshotResponseHeaderPairs(new Headers())).toEqual([]);
+  });
+});
+
+describe("findAccessToken", () => {
+  it("finds a top-level access_token", () => {
+    expect(findAccessToken({ access_token: "tok-1" })).toBe("tok-1");
+  });
+
+  it("finds a token nested one level deep (e.g. under data)", () => {
+    expect(findAccessToken({ data: { access_token: "tok-2" } })).toBe("tok-2");
+  });
+
+  it("prefers a shallower match over a deeper one, regardless of candidate-key order", () => {
+    expect(findAccessToken({ token: "shallow", data: { access_token: "deep" } })).toBe("shallow");
+  });
+
+  it("at the same depth, resolves ties using ACCESS_TOKEN_KEY_CANDIDATES priority order", () => {
+    expect(findAccessToken({ jwt: "low-priority", access_token: "high-priority" })).toBe("high-priority");
+  });
+
+  it("matches candidate keys case-insensitively", () => {
+    expect(findAccessToken({ Access_Token: "tok-3" })).toBe("tok-3");
+  });
+
+  it("does not find a match nested more than one level deep (depth-2 cutoff)", () => {
+    expect(findAccessToken({ data: { auth: { access_token: "too-deep" } } })).toBeUndefined();
+  });
+
+  it("skips arrays and does not return a token found inside a list", () => {
+    expect(findAccessToken({ tokens: [{ access_token: "in-array" }] })).toBeUndefined();
+  });
+
+  it("returns undefined for a non-object body", () => {
+    expect(findAccessToken("just a string")).toBeUndefined();
+    expect(findAccessToken(null)).toBeUndefined();
+    expect(findAccessToken(42)).toBeUndefined();
+  });
+
+  it("returns undefined for an empty object or one with no recognizable key", () => {
+    expect(findAccessToken({})).toBeUndefined();
+    expect(findAccessToken({ unrelated: "value" })).toBeUndefined();
+  });
+
+  it("ignores a candidate key whose value is not a non-empty string", () => {
+    expect(findAccessToken({ access_token: "", token: "fallback" })).toBe("fallback");
+    expect(findAccessToken({ access_token: "   ", token: "fallback2" })).toBe("fallback2");
+    expect(findAccessToken({ access_token: 12345, token: "fallback3" })).toBe("fallback3");
+  });
+});
+
+describe("setHeaderIfAbsent", () => {
+  it("sets the header when no key names it under any casing", () => {
+    const headers: Record<string, string> = {};
+    setHeaderIfAbsent(headers, "Content-Type", "application/json");
+    expect(headers).toEqual({ "Content-Type": "application/json" });
+  });
+
+  it("leaves an existing differently-cased key untouched instead of adding a second key", () => {
+    const headers: Record<string, string> = { "content-type": "application/x-www-form-urlencoded" };
+    setHeaderIfAbsent(headers, "Content-Type", "application/json");
+    expect(headers).toEqual({ "content-type": "application/x-www-form-urlencoded" });
+  });
+
+  it("REGRESSION: a naive case-sensitive `headers[name] ?? default` would leave both keys, which fetch's Headers then comma-joins into a malformed value", () => {
+    const headers: Record<string, string> = { "content-type": "application/x-www-form-urlencoded" };
+    setHeaderIfAbsent(headers, "Content-Type", "application/x-www-form-urlencoded");
+    expect(new Headers(headers).get("content-type")).toBe("application/x-www-form-urlencoded");
+  });
+});
+
+describe("setHeader", () => {
+  it("sets the header when absent", () => {
+    const headers: Record<string, string> = {};
+    setHeader(headers, "Content-Type", "application/json");
+    expect(headers).toEqual({ "Content-Type": "application/json" });
+  });
+
+  it("replaces an existing differently-cased key rather than adding a second one", () => {
+    const headers: Record<string, string> = { "content-type": "text/plain" };
+    setHeader(headers, "Content-Type", "application/json");
+    expect(headers).toEqual({ "Content-Type": "application/json" });
+  });
+
+  it("overwrites the value in place when the casing already matches", () => {
+    const headers: Record<string, string> = { "Content-Type": "text/plain" };
+    setHeader(headers, "Content-Type", "application/json");
+    expect(headers).toEqual({ "Content-Type": "application/json" });
   });
 });

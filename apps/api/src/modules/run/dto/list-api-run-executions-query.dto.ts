@@ -1,5 +1,5 @@
 import { ApiPropertyOptional } from "@nestjs/swagger";
-import { IsIn, IsOptional, IsUUID } from "class-validator";
+import { IsIn, IsOptional, IsString, IsUUID } from "class-validator";
 
 import { PaginationQueryDto } from "../../../common/dto/pagination-query.dto";
 
@@ -11,6 +11,14 @@ export class ListApiRunExecutionsQueryDto extends PaginationQueryDto {
   @IsOptional()
   @IsUUID()
   environmentId?: string;
+
+  // Phase 3 Test Case History & Run Again (§8 drill-down) — filters this
+  // API's execution history down to one Test Case's chain (see
+  // RunExecution.testCaseKey schema doc comment).
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  testCaseKey?: string;
 
   @ApiPropertyOptional({ enum: SORT_BY_VALUES, default: "createdAt" })
   @IsOptional()

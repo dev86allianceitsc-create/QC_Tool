@@ -28,6 +28,10 @@ import { useEnvironmentList } from "./useEnvironmentList"
 
 import { useRequestInput } from "./useRequestInput"
 
+import { useTestAccounts } from "./useTestAccounts"
+
+import type { RunRequestValues } from "./requestInput.types"
+
 import { useSingleRunExecution } from "./useSingleRunExecution"
 
 import { Button } from "../../components/ui/Button"
@@ -85,11 +89,19 @@ export function ApiDetailScreen({
 
   onViewAllRuns,
 
+  onViewSnapshot,
+
+  onViewComparison,
+
   onSessionExpired,
 
   onAccessDenied,
 
   onBackToBatch,
+
+  initialArea,
+
+  initialRunValues,
 }: {
   user: { email: string; role: Role }
 
@@ -107,11 +119,19 @@ export function ApiDetailScreen({
 
   onViewAllRuns: () => void
 
+  onViewSnapshot?: (snapshotId: string) => void
+
+  onViewComparison?: (comparisonId: string) => void
+
   onSessionExpired: () => void
 
   onAccessDenied: () => void
 
   onBackToBatch?: () => void
+
+  initialArea?: "run" | "history"
+
+  initialRunValues?: RunRequestValues
 }) {
   const isAdmin = user.role === "ADMIN"
 
@@ -132,12 +152,7 @@ export function ApiDetailScreen({
     onAccessDenied,
   )
 
-  const {
-    configs,
-    loading: configsLoading,
-    putConfig,
-    refetch: refetchConfigs,
-  } = useApiEnvironmentConfigs(
+  const { configs, loading: configsLoading } = useApiEnvironmentConfigs(
     projectId,
     apiId,
     accessToken,
@@ -153,7 +168,7 @@ export function ApiDetailScreen({
     onAccessDenied,
   )
 
-  const [area, setArea] = useState<ApiWorkspaceArea>("configuration")
+  const [area, setArea] = useState<ApiWorkspaceArea>(initialArea ?? "configuration")
 
   const [showEditModal, setShowEditModal] = useState(false)
 
@@ -168,23 +183,12 @@ export function ApiDetailScreen({
   const [selectedEnvironmentId, setSelectedEnvironmentId] =
     useState<string | null>(null)
 
-  const [urlDraft, setUrlDraft] = useState<Record<string, string>>({})
-
-  const [savingUrl, setSavingUrl] = useState(false)
-
-  const [urlError, setUrlError] = useState<string | null>(null)
-
-  const [urlSaved, setUrlSaved] = useState(false)
-
   const [requestInputDirty, setRequestInputDirty] = useState(false)
-
-  const [authenticationDirty, setAuthenticationDirty] = useState(false)
 
   const [pendingNav, setPendingNav] = useState<(() => void) | null>(null)
 
   const authentication = useAuthentication(
     projectId,
-    apiId,
     selectedEnvironmentId,
     accessToken,
     onSessionExpired,
@@ -195,6 +199,16 @@ export function ApiDetailScreen({
     projectId,
     apiId,
     selectedEnvironmentId,
+    accessToken,
+    onSessionExpired,
+    onAccessDenied,
+  )
+
+  const testAccounts = useTestAccounts(
+    projectId,
+    authentication.config?.authType === "LOGIN_FORM"
+      ? selectedEnvironmentId
+      : null,
     accessToken,
     onSessionExpired,
     onAccessDenied,
@@ -226,10 +240,6 @@ export function ApiDetailScreen({
       setSelectedEnvironmentId(activeEnvironments[0].environmentId)
     }
   }, [activeEnvironments, selectedEnvironmentId])
-
-  useEffect(() => {
-    setUrlSaved(false)
-  }, [selectedEnvironmentId])
 
   if (loading) {
     return (
@@ -274,18 +284,14 @@ export function ApiDetailScreen({
 
   // UX-01: switching area/step (or, for Authentication, switching
 
-  // Environment) away from an unsaved draft would silently drop it (Full URL
+  // Environment) away from an unsaved draft would silently drop it. No
 
-  // drafts live in this screen's own state and survive navigation, so they
+  // reusable "unsaved changes" mechanism exists elsewhere in the app yet,
 
-  // need no such guard). No reusable "unsaved changes" mechanism exists
-
-  // elsewhere in the app yet, so this guard is scoped to this screen's own
-
-  // internal navigation only.
+  // so this guard is scoped to this screen's own internal navigation only.
 
   function guardedNavigate(action: () => void) {
-    if (requestInputDirty || authenticationDirty) {
+    if (requestInputDirty) {
       setPendingNav(() => action)
     } else {
       action()
@@ -337,49 +343,6 @@ export function ApiDetailScreen({
     }
   }
 
-  // The Environment-config list carries its own credentialStatus (derived
-
-  // server-side from the same Authentication Configuration rows), and it
-
-  // feeds the step readiness badges and the Execution Target readiness card.
-
-  // It is fetched once per API, so every Authentication mutation has to
-
-  // refresh it or those places keep showing the pre-mutation status.
-
-  async function withConfigRefresh<T>(mutate: () => Promise<T>): Promise<T> {
-    const result = await mutate()
-
-    await refetchConfigs()
-
-    return result
-  }
-
-  async function handleSaveUrl() {
-    if (!selectedEnvironment) return
-
-    const value =
-      urlDraft[selectedEnvironment.environmentId] ?? config?.fullUrl ?? ""
-
-    setSavingUrl(true)
-
-    setUrlError(null)
-
-    setUrlSaved(false)
-
-    try {
-      await putConfig(selectedEnvironment.environmentId, value.trim())
-
-      setUrlSaved(true)
-    } catch (err) {
-      setUrlError(
-        err instanceof ApiError ? err.message : "Unable to save Full URL.",
-      )
-    } finally {
-      setSavingUrl(false)
-    }
-  }
-
   const requestInputHasData =
     !!requestInput.definition &&
     (requestInput.definition.pathParameters.length > 0 ||
@@ -403,25 +366,9 @@ export function ApiDetailScreen({
   const executionTargetReadiness: StepReadiness =
     activeEnvironments.length === 0
       ? "not_available"
-      : config?.urlStatus === "CONFIGURED"
+      : config?.effectiveUrl
         ? "configured"
         : "needs_attention"
-
-  // CL-3C-01: only an Admin may change the Authentication Type, the Login
-
-  // metadata or the credential; Users see the same safe metadata and status
-
-  // read-only. Project/Environment INACTIVE freezes it for everyone. The
-
-  // reason is stated so a disabled form never looks broken.
-
-  const authenticationReadOnlyReason = !isAdmin
-    ? "Only an Admin can change the Authentication Type or credential for this API in this Environment."
-    : projectInactive
-      ? "This Project is INACTIVE — Authentication is view-only until the Project is reactivated."
-      : environmentInactive
-        ? "This Environment is INACTIVE — Authentication is view-only until the Environment is reactivated."
-        : undefined
 
   // Both the Authentication step (per-Environment fetch) and the Environment
 
@@ -444,21 +391,6 @@ export function ApiDetailScreen({
     ? AUTH_TYPE_LABELS[liveAuthConfig.authType]
     : null
 
-  // credentialStatus already collapses NONE→NOT_REQUIRED at the backend, so
-
-  // "configured" covers both "no credential needed" and "credential set";
-
-  // "needs_attention" is only the transient state before configs load.
-
-  const authenticationReadiness: StepReadiness =
-    activeEnvironments.length === 0
-      ? "not_available"
-      : !credentialStatus
-        ? "needs_attention"
-        : credentialStatus === "NOT_CONFIGURED"
-          ? "not_configured"
-          : "configured"
-
   // UI-RUN-01: the concrete reasons a Run could not be started for the
 
   // selected Environment. Run execution itself is out of 3C scope — this
@@ -475,12 +407,18 @@ export function ApiDetailScreen({
           ? "Allow Run is OFF for this Environment."
           : null,
 
-        config?.urlStatus !== "CONFIGURED"
+        !config?.effectiveUrl
           ? "The Full URL is not configured for this Environment."
           : null,
 
         credentialStatus === "NOT_CONFIGURED"
           ? "The credential for the selected Authentication Type is not configured."
+          : null,
+
+        liveAuthConfig?.authType === "LOGIN_FORM" &&
+        !testAccounts.loading &&
+        testAccounts.testAccounts.length === 0
+          ? "No Test Accounts are configured for this Environment's Login Form Authentication."
           : null,
       ].filter((reason): reason is string => reason !== null)
     : []
@@ -594,57 +532,20 @@ export function ApiDetailScreen({
           environments={activeEnvironments}
           selectedEnvironment={selectedEnvironment}
           environmentInactive={environmentInactive}
-          config={config}
-          configsLoading={configsLoading}
           readOnlyConfig={readOnlyConfig}
-          urlDraft={urlDraft}
-          onUrlDraftChange={(environmentId, value) => {
-            setUrlDraft((prev) => ({ ...prev, [environmentId]: value }))
-
-            setUrlSaved(false)
-          }}
-          savingUrl={savingUrl}
-          urlError={urlError}
-          urlSaved={urlSaved}
-          onSaveUrl={() => void handleSaveUrl()}
           requestInput={requestInput}
           projectInactive={projectInactive}
           requestInputReadiness={requestInputReadiness}
           onRequestInputDirtyChange={setRequestInputDirty}
           apiId={apiId}
-          authentication={{
-            config: authentication.config,
-
-            loading: authentication.loading,
-
-            error: authentication.error,
-
-            saving: authentication.saving,
-
-            refetch: authentication.refetch,
-
-            saveConfiguration: (payload) =>
-              withConfigRefresh(() =>
-                authentication.saveConfiguration(payload),
-              ),
-
-            saveCredential: (payload) =>
-              withConfigRefresh(() => authentication.saveCredential(payload)),
-
-            removeCredential: () =>
-              withConfigRefresh(() => authentication.removeCredential()),
-          }}
-          selectedEnvironmentId={selectedEnvironmentId}
-          isAdmin={isAdmin}
-          authenticationReadOnlyReason={authenticationReadOnlyReason}
-          authenticationReadiness={authenticationReadiness}
-          onAuthenticationDirtyChange={setAuthenticationDirty}
           guardedNavigate={guardedNavigate}
+          onFinish={() => setArea("run")}
         />
       )}
 
       {area === "run" && (
         <RunApiArea
+          apiId={apiId}
           httpMethod={currentApi.httpMethod}
           environments={activeEnvironments}
           selectedEnvironmentId={selectedEnvironmentId}
@@ -655,10 +556,16 @@ export function ApiDetailScreen({
           configsLoading={configsLoading}
           executionTargetReadiness={executionTargetReadiness}
           requestInputDefinition={requestInput.definition}
+          initialValues={initialRunValues}
           authTypeLabel={authTypeLabel}
+          authType={liveAuthConfig?.authType ?? null}
           credentialStatus={credentialStatus}
+          testAccounts={testAccounts.testAccounts}
+          testAccountsLoading={testAccounts.loading}
           runBlockers={runBlockers}
           runExecution={runExecution}
+          onViewSnapshot={onViewSnapshot}
+          onViewComparison={onViewComparison}
         />
       )}
 
@@ -668,6 +575,7 @@ export function ApiDetailScreen({
           apiId={apiId}
           accessToken={accessToken}
           onViewExecution={onViewExecution}
+          onViewComparison={onViewComparison}
           onViewAllRuns={onViewAllRuns}
           onSessionExpired={onSessionExpired}
           onAccessDenied={onAccessDenied}

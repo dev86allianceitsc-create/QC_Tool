@@ -2,7 +2,7 @@ import { useMemo, useState } from "react"
 import { Badge } from "../../components/ui/Badge"
 import { Button } from "../../components/ui/Button"
 import { CopyableText } from "../../components/ui/CopyableText"
-import { thClass, tdClass, trHoverClass } from "../../components/ui/table"
+import { thClass, thCenterClass, tdClass, trHoverClass } from "../../components/ui/table"
 import { formatTimestamp } from "../apiEnvironment/ExecutionResultView"
 import { useApiList } from "../apiEnvironment/useApiList"
 import { useEnvironmentList } from "../apiEnvironment/useEnvironmentList"
@@ -276,14 +276,14 @@ export function ComparisonHistoryScreen({
               <table className="w-full border-collapse">
                 <thead>
                   <tr>
-                    <th className={thClass}>Snapshot pair</th>
+                    <th className={thClass}>Compared</th>
                     <th className={thClass}>API / Environment</th>
                     <th className={thClass}>Source</th>
                     <th className={thClass}>Created</th>
                     <th className={thClass}>Status</th>
                     <th className={thClass}>Result</th>
                     <th className={thClass}>Classification</th>
-                    <th className={`${thClass} text-center`}>Actions</th>
+                    <th className={thCenterClass}>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -305,14 +305,23 @@ export function ComparisonHistoryScreen({
                     return (
                       <tr key={item.comparisonId} className={trHoverClass}>
                         <td className={tdClass}>
-                          <div className="flex items-center gap-1 font-mono text-xs">
+                          <div className="text-xs text-gray-900">
+                            {formatTimestamp(
+                              item.baselineSnapshot.executionCompletedAt,
+                            )}
+                            <span className="text-muted"> → </span>
+                            {formatTimestamp(
+                              item.targetSnapshot.executionCompletedAt,
+                            )}
+                          </div>
+                          <div className="mt-1 flex items-center gap-1 font-mono text-[10px] text-muted">
                             <CopyableText
                               value={item.baselineSnapshotId}
                               display={formatSnapshotShortId(
                                 item.baselineSnapshotId,
                               )}
                             />
-                            <span className="text-muted">→</span>
+                            <span>→</span>
                             <CopyableText
                               value={item.targetSnapshotId}
                               display={formatSnapshotShortId(

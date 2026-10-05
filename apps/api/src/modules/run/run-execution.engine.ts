@@ -1,13 +1,16 @@
 import { Injectable, Logger } from "@nestjs/common";
+import { Prisma } from "@prisma/client";
 import { PrismaService } from "../../prisma/prisma.service";
 import { decryptSecret } from "../../common/utils/credential-crypto";
 import { ComparisonEngineService } from "../comparison/comparison-engine.service";
 import { ComparisonService } from "../comparison/comparison.service";
 import { SnapshotService } from "../snapshot/snapshot.service";
 import { SNAPSHOT_MAX_PAYLOAD_BYTES } from "../snapshot/snapshot.constants";
-import { classifyTransportError, getByDotPath, readResponseBody, redactHeaders, toSnapshotRequestHeaderPairs, toSnapshotResponseHeaderPairs } from "./run-dispatch.util";
+import { classifyTransportError, findAccessToken, readResponseBody, redactHeaders, setHeader, setHeaderIfAbsent, toSnapshotRequestHeaderPairs, toSnapshotResponseHeaderPairs } from "./run-dispatch.util";
 import { buildActualUrl, buildQueryEntries } from "./run-url.util";
 import { RUN_EXECUTION_TIMEOUT_MS } from "./run.constants";
+import { resolveEffectiveUrl } from "../api-environment/full-url-resolution.util";
+import { computeTestCaseKey } from "./test-case-identity.util";
 
 export interface PendingExecutionContext {
   runExecutionId: string;
@@ -18,6 +21,13 @@ export interface PendingExecutionContext {
     headerValues: Record<string, string>;
     bodyValue: string;
   };
+  // Advanced "Re-run this execution" (§5) only: the execution this run is
+  // explicitly re-running. When set, baseline selection skips the normal
+  // testCaseKey-based selectBaselineSnapshot (concept A) entirely and is
+  // forced to that execution's own produced Snapshot instead — a deliberate
+  // override, never a fallback to auto-selection. Ordinary Run Again/Run API
+  // dispatch always leaves this undefined.
+  forcedBaselineSourceExecutionId?: string | null;
 }
 
 // Run/Project/Environment/User context needed for Snapshot's historical-name
@@ -29,8 +39,25 @@ interface DispatchRunContext {
   projectName: string;
   environmentId: string;
   environmentName: string;
+  environmentBaseUrl: string | null;
   initiatedByUserId: string;
   initiatedByLabel: string;
+  // Phase 3 Test Case History & Run Again: flat id form of testAccount
+  // below, sourced the same way (run.testAccountId) — needed as a plain
+  // scalar for computeTestCaseKey and for Snapshot.testAccountId, neither of
+  // which need the full credential sub-object.
+  testAccountId: string | null;
+  // REVISION 3C-R02: the Login Form Test Account selected for this Run (null
+  // whenever the Environment's authType is not LOGIN_FORM, or none was
+  // selected — treated like today's "no credential configured" case, an
+  // advisory-only gap, never a hard block).
+  testAccount: {
+    label: string;
+    username: string;
+    passwordCiphertext: Uint8Array<ArrayBuffer>;
+    passwordIv: Uint8Array<ArrayBuffer>;
+    passwordAuthTag: Uint8Array<ArrayBuffer>;
+  } | null;
 }
 
 // Dispatches the HTTP requests for one accepted Run. Invoked fire-and-forget
@@ -71,7 +98,7 @@ export class RunExecutionEngine {
     // per-child.
     const run = await this.prisma.run.findUnique({
       where: { runId },
-      include: { project: true, environment: true, creator: true },
+      include: { project: true, environment: true, creator: true, testAccount: true },
     });
     const environment = run?.environment;
     if (!run || !environment || environment.environmentStatus !== "ACTIVE" || !environment.allowRun) {
@@ -86,8 +113,13 @@ export class RunExecutionEngine {
       projectName: run.project.projectName,
       environmentId: run.environmentId,
       environmentName: environment.environmentName,
+      environmentBaseUrl: environment.baseUrl,
       initiatedByUserId: run.createdBy,
       initiatedByLabel: run.creator.email,
+      testAccountId: run.testAccountId,
+      testAccount: run.testAccount
+        ? { label: run.testAccount.label, username: run.testAccount.username, passwordCiphertext: run.testAccount.passwordCiphertext, passwordIv: run.testAccount.passwordIv, passwordAuthTag: run.testAccount.passwordAuthTag }
+        : null,
     };
 
     for (let i = 0; i < pending.length; i++) {
@@ -134,13 +166,26 @@ export class RunExecutionEngine {
     const [api, config, authConfig, bodyDef] = await Promise.all([
       this.prisma.apiConfiguration.findUnique({ where: { apiId } }),
       this.prisma.apiEnvironmentConfig.findUnique({ where: { apiId_environmentId: { apiId, environmentId } } }),
-      this.prisma.authenticationConfiguration.findUnique({ where: { apiId_environmentId: { apiId, environmentId } } }),
+      this.prisma.authenticationConfiguration.findUnique({ where: { environmentId } }),
       this.prisma.requestBodyDefinition.findUnique({ where: { apiId } }),
     ]);
 
     const authType = authConfig?.authType ?? "NONE";
     const authContextVersion = authConfig?.contextVersion ?? 1;
-    const authIdentityLabel = authConfig?.authType === "LOGIN_FORM" ? (authConfig?.username ?? null) : null;
+    const authIdentityLabel = authType === "LOGIN_FORM" ? (ctx.testAccount?.label ?? null) : null;
+
+    // Phase 3 Test Case Identity (concept A) — deliberately excludes
+    // authContextVersion/authContextKey, see test-case-identity.util.ts.
+    const testCaseKey = computeTestCaseKey({
+      apiId,
+      environmentId,
+      authType,
+      testAccountId: ctx.testAccountId,
+      pathValues: requestValues.pathValues,
+      queryValues: requestValues.queryValues,
+      headerValues: requestValues.headerValues,
+      bodyValue: requestValues.bodyValue,
+    });
 
     // CMP-003/013 (AnD Section 4.1): the baseline Snapshot is chosen and
     // locked once, right here, before dispatch — never reselected later even
@@ -148,14 +193,18 @@ export class RunExecutionEngine {
     // mid-flight (RS-CMP-016-09). A null baseline (no candidate yet) is
     // recorded as NO_BASELINE immediately and is never overwritten
     // afterward — the first-gate-wins precedence rule (AnD §4.1).
-    const baseline = await this.comparisonService.selectBaselineSnapshot({
-      projectId: ctx.projectId,
-      apiId,
-      environmentId,
-      authType,
-      authContextVersion,
-      authIdentityLabel,
-    });
+    //
+    // §5 forced baseline (advanced "Re-run this execution"): bypasses
+    // testCaseKey-based selection entirely and locks onto one specific prior
+    // execution's own produced Snapshot, honoring invalidation exactly like
+    // the normal path but never falling back to auto-selection if that
+    // Snapshot is missing/invalidated — the forced choice is deliberate.
+    const baseline = item.forcedBaselineSourceExecutionId
+      ? await this.resolveForcedBaseline(item.forcedBaselineSourceExecutionId)
+      : await this.comparisonService.selectBaselineSnapshot({
+          projectId: ctx.projectId,
+          testCaseKey,
+        });
     await this.prisma.runExecution.update({
       where: { runExecutionId },
       data: {
@@ -169,7 +218,8 @@ export class RunExecutionEngine {
     // that produced this row — treated as present, consistent with how the
     // rest of the codebase does not defend against sub-second cross-request
     // races on rows it just wrote itself.
-    const url = buildActualUrl(config!.fullUrl, requestValues.pathValues, requestValues.queryValues);
+    const effectiveUrl = resolveEffectiveUrl(config?.fullUrl, ctx.environmentBaseUrl, api!.path).url;
+    const url = buildActualUrl(effectiveUrl!, requestValues.pathValues, requestValues.queryValues);
 
     const headers: Record<string, string> = {};
     for (const [key, value] of Object.entries(requestValues.headerValues)) {
@@ -190,10 +240,16 @@ export class RunExecutionEngine {
       } catch (err) {
         authError = classifyTransportError(err);
       }
-    } else if (authConfig?.authType === "LOGIN_FORM" && authConfig.passwordCiphertext && authConfig.passwordIv && authConfig.passwordAuthTag) {
+    } else if (authConfig?.authType === "LOGIN_FORM" && ctx.testAccount) {
       try {
-        const password = decryptSecret({ ciphertext: authConfig.passwordCiphertext, iv: authConfig.passwordIv, authTag: authConfig.passwordAuthTag });
-        const token = await this.performLoginFormAuth(authConfig, password);
+        const password = decryptSecret({ ciphertext: ctx.testAccount.passwordCiphertext, iv: ctx.testAccount.passwordIv, authTag: ctx.testAccount.passwordAuthTag });
+        const token =
+          authConfig.loginMode === "IMPORTED"
+            ? await this.performImportedLoginFormAuth(authConfig, ctx.testAccount.username, password)
+            : await this.performLoginFormAuth(
+                { loginUrl: authConfig.loginUrl, username: ctx.testAccount.username, usernameField: authConfig.usernameField, passwordField: authConfig.passwordField },
+                password,
+              );
         headers["Authorization"] = `Bearer ${token}`;
       } catch (err) {
         authError = classifyTransportError(err);
@@ -203,7 +259,7 @@ export class RunExecutionEngine {
     let bodyText: string | undefined;
     if (bodyDef && requestValues.bodyValue && requestValues.bodyValue.trim() !== "") {
       bodyText = requestValues.bodyValue;
-      headers["Content-Type"] = "application/json";
+      setHeader(headers, "Content-Type", "application/json");
     }
 
     const requestSentAt = new Date();
@@ -226,6 +282,8 @@ export class RunExecutionEngine {
           errorReasonCode: authError.reasonCode,
           errorMessageSafe: authError.message,
           ...requestTrace,
+          authType,
+          testCaseKey,
           endedAt: new Date(),
           durationMs: Date.now() - startedAt.getTime(),
           comparisonAvailabilityReasonCode: baseline ? "NO_NEW_SNAPSHOT" : undefined,
@@ -258,6 +316,8 @@ export class RunExecutionEngine {
           errorReasonCode: outcome === "RUN_ERROR" ? "HTTP_ERROR" : null,
           httpStatus: response.status,
           ...requestTrace,
+          authType,
+          testCaseKey,
           responseHeadersSafe,
           responseBodySafe: body.bodyText,
           responseContentType: body.contentType,
@@ -292,6 +352,8 @@ export class RunExecutionEngine {
             authType,
             authContextVersion,
             authIdentityLabel,
+            testAccountId: ctx.testAccountId,
+            testCaseKey,
             initiatedByUserId: ctx.initiatedByUserId,
             initiatedByLabel: ctx.initiatedByLabel,
             httpMethod: api!.httpMethod,
@@ -337,6 +399,7 @@ export class RunExecutionEngine {
               environmentId: ctx.environmentId,
               baselineSnapshotId: baseline.snapshotId,
               targetSnapshotId: targetSnapshot.snapshotId,
+              sourceKind: item.forcedBaselineSourceExecutionId ? "RERUN_EXECUTION" : "AUTO_EXECUTION",
             });
 
             // CMP-013/016: re-query rather than change
@@ -378,6 +441,8 @@ export class RunExecutionEngine {
           errorReasonCode: classified.reasonCode,
           errorMessageSafe: classified.message,
           ...requestTrace,
+          authType,
+          testCaseKey,
           endedAt: new Date(),
           durationMs: Date.now() - startedAt.getTime(),
           comparisonAvailabilityReasonCode: baseline ? "NO_NEW_SNAPSHOT" : undefined,
@@ -386,8 +451,24 @@ export class RunExecutionEngine {
     }
   }
 
+  // §5 "Re-run this execution": the forced baseline is the source
+  // execution's own produced Snapshot (relation "RunExecutionTargetSnapshot"
+  // — distinct from that execution's own `baselineSnapshot`, which is what
+  // *it* compared against, not what we want here), honoring invalidation.
+  // Never falls back to selectBaselineSnapshot — null means NO_BASELINE.
+  private async resolveForcedBaseline(sourceExecutionId: string): Promise<{ snapshotId: string } | null> {
+    const source = await this.prisma.runExecution.findUnique({
+      where: { runExecutionId: sourceExecutionId },
+      include: { snapshot: { include: { invalidation: true } } },
+    });
+    if (!source?.snapshot || source.snapshot.invalidation) {
+      return null;
+    }
+    return { snapshotId: source.snapshot.snapshotId };
+  }
+
   private async performLoginFormAuth(
-    authConfig: { loginUrl: string | null; username: string | null; usernameField: string | null; passwordField: string | null; tokenResponsePath: string | null },
+    authConfig: { loginUrl: string | null; username: string | null; usernameField: string | null; passwordField: string | null },
     password: string,
   ): Promise<string> {
     const body = JSON.stringify({
@@ -411,14 +492,125 @@ export class RunExecutionEngine {
     }
 
     if (!response.ok) {
-      throw new Error(`Login endpoint returned HTTP ${response.status}`);
+      throw new Error(`Login endpoint returned HTTP ${response.status}${await this.describeErrorBody(response)}`);
     }
 
     const json: unknown = await response.json();
-    const token = getByDotPath(json, authConfig.tokenResponsePath ?? "");
-    if (typeof token !== "string" || token.trim() === "") {
-      throw new Error("Login response did not contain a token at the configured path");
+    const token = findAccessToken(json);
+    if (!token) {
+      throw new Error("Login response did not contain a recognizable access token");
     }
     return token;
   }
+
+  // Best-effort detail appended to a non-OK login response's error message so
+  // an admin sees *why* the login failed (e.g. an OAuth2 token endpoint's
+  // `{"error":"invalid_grant"}`) instead of only the bare status code — this
+  // was previously the only signal surfaced (REQ-RUN-003 error trace), which
+  // was indistinguishable from a Login Form import/config bug versus simply
+  // wrong Test Account credentials. Swallows any read failure (e.g. an
+  // already-consumed or bodyless response) since this is purely diagnostic
+  // and must never itself fail the auth attempt.
+  private async describeErrorBody(response: Response): Promise<string> {
+    try {
+      const text = (await response.text()).trim();
+      if (!text) return "";
+      const snippet = text.length > 300 ? `${text.slice(0, 300)}…` : text;
+      return `: ${snippet}`;
+    } catch {
+      return "";
+    }
+  }
+
+  // IMPORTED Login Form: the login request template was captured once via
+  // "Import from cURL/fetch" and reviewed/saved by the admin (Phase C). Only
+  // the two structural locations (importUsernameLocation/importPasswordLocation)
+  // are overwritten with the selected Test Account's real values at Run
+  // time — everything else in the template (extra headers/body params such
+  // as grant_type) is sent through unchanged.
+  private async performImportedLoginFormAuth(
+    authConfig: {
+      importUrl: string | null;
+      importMethod: string | null;
+      importHeaders: Prisma.JsonValue | null;
+      importBodyFormat: string | null;
+      importBodyFields: Prisma.JsonValue | null;
+      importUsernameLocation: Prisma.JsonValue | null;
+      importPasswordLocation: Prisma.JsonValue | null;
+    },
+    username: string,
+    password: string,
+  ): Promise<string> {
+    const headerEntries = (authConfig.importHeaders as ImportKeyValueEntry[] | null) ?? [];
+    const bodyFieldEntries = (authConfig.importBodyFields as ImportKeyValueEntry[] | null) ?? [];
+    const usernameLocation = authConfig.importUsernameLocation as ImportFieldLocation | null;
+    const passwordLocation = authConfig.importPasswordLocation as ImportFieldLocation | null;
+
+    const headers: Record<string, string> = {};
+    for (const entry of headerEntries) {
+      headers[entry.name] = entry.value;
+    }
+    const bodyFields: Record<string, string> = {};
+    for (const entry of bodyFieldEntries) {
+      bodyFields[entry.name] = entry.value;
+    }
+
+    const applyCredential = (location: ImportFieldLocation | null, value: string) => {
+      if (!location) {
+        return;
+      }
+      if (location.kind === "HEADER") {
+        headers[location.name] = value;
+      } else {
+        bodyFields[location.name] = value;
+      }
+    };
+    applyCredential(usernameLocation, username);
+    applyCredential(passwordLocation, password);
+
+    let body: string | undefined;
+    if (authConfig.importBodyFormat === "JSON") {
+      body = JSON.stringify(bodyFields);
+      setHeaderIfAbsent(headers, "Content-Type", "application/json");
+    } else if (authConfig.importBodyFormat === "FORM_URLENCODED") {
+      body = new URLSearchParams(bodyFields).toString();
+      setHeaderIfAbsent(headers, "Content-Type", "application/x-www-form-urlencoded");
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), RUN_EXECUTION_TIMEOUT_MS);
+    let response: Response;
+    try {
+      response = await fetch(authConfig.importUrl!, {
+        method: authConfig.importMethod ?? "POST",
+        headers,
+        body,
+        redirect: "manual",
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    if (!response.ok) {
+      throw new Error(`Login endpoint returned HTTP ${response.status}${await this.describeErrorBody(response)}`);
+    }
+
+    const json: unknown = await response.json();
+    const token = findAccessToken(json);
+    if (!token) {
+      throw new Error("Login response did not contain a recognizable access token");
+    }
+    return token;
+  }
+}
+
+interface ImportKeyValueEntry {
+  name: string;
+  value: string;
+}
+
+interface ImportFieldLocation {
+  kind: "HEADER" | "BODY";
+  name: string;
 }

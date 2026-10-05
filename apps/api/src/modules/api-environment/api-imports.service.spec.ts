@@ -1,3 +1,4 @@
+import { BusinessException } from "../../common/exceptions/business.exception";
 import { ApiImportsService } from "./api-imports.service";
 
 describe("ApiImportsService", () => {
@@ -267,6 +268,113 @@ describe("ApiImportsService", () => {
         expect.objectContaining({ httpMethod: "GET", path: "/x", result: "IMPORTED" }),
         expect.objectContaining({ httpMethod: "POST", path: "/missing", result: "FAILED" }),
       ]);
+    });
+  });
+
+  describe("importFromCurlFetch (Phase 2, customer feedback #1)", () => {
+    function dto(overrides: Record<string, unknown> = {}) {
+      return {
+        apiName: "Get Widget",
+        httpMethod: "GET",
+        path: "/widgets/{id}",
+        description: null,
+        queryParameters: [],
+        headerParameters: [],
+        requestBody: null,
+        ...overrides,
+      } as never;
+    }
+
+    it("creates the API and its Request Input atomically with creationSource CURL_IMPORT, and audits API_IMPORTED", async () => {
+      const { service, prisma, auditWriter } = makeService();
+      prisma.apiConfiguration.create.mockResolvedValue({
+        apiId: "a-1",
+        projectId: "p-1",
+        apiName: "Get Widget",
+        httpMethod: "GET",
+        path: "/widgets/{id}",
+        description: null,
+        creationSource: "CURL_IMPORT",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+
+      const result = await service.importFromCurlFetch(
+        "p-1",
+        dto({ queryParameters: [{ name: "status", required: false }], headerParameters: [{ name: "X-Client-Id", required: true }], requestBody: { bodyType: "JSON" } }),
+        "admin-1",
+      );
+
+      expect(prisma.apiConfiguration.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ apiName: "Get Widget", httpMethod: "GET", path: "/widgets/{id}", creationSource: "CURL_IMPORT" }),
+      });
+      expect(prisma.requestParameterDefinition.createMany).toHaveBeenCalledWith({
+        data: [
+          { apiId: "a-1", location: "QUERY", parameterName: "status", isRequired: false },
+          { apiId: "a-1", location: "HEADER", parameterName: "X-Client-Id", isRequired: true },
+        ],
+      });
+      expect(prisma.requestBodyDefinition.create).toHaveBeenCalledWith({ data: { apiId: "a-1", bodyType: "JSON" } });
+      expect(auditWriter.record).toHaveBeenCalledWith(
+        expect.objectContaining({ eventType: "API_IMPORTED", afterData: expect.objectContaining({ creationSource: "CURL_IMPORT", requestInputCounts: { query: 1, header: 1, body: 1 } }) }),
+        prisma,
+      );
+      expect(result).toEqual(expect.objectContaining({ apiId: "a-1", creationSource: "CURL_IMPORT" }));
+    });
+
+    it("rejects with 409 API_ALREADY_EXISTS when an active API with the same Method+Path already exists", async () => {
+      const { service, prisma } = makeService();
+      prisma.apiConfiguration.findFirst.mockResolvedValue({ apiId: "existing" });
+
+      await expect(service.importFromCurlFetch("p-1", dto(), "admin-1")).rejects.toBeInstanceOf(BusinessException);
+      expect(prisma.apiConfiguration.create).not.toHaveBeenCalled();
+    });
+
+    it("rejects with 422 SEMANTIC_VALIDATION_ERROR for a reserved Header parameter, without opening a transaction", async () => {
+      const { service, prisma } = makeService();
+
+      await expect(service.importFromCurlFetch("p-1", dto({ headerParameters: [{ name: "Authorization", required: false }] }), "admin-1")).rejects.toBeInstanceOf(
+        BusinessException,
+      );
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it("rejects a duplicate QUERY parameter name, without opening a transaction", async () => {
+      const { service, prisma } = makeService();
+
+      await expect(
+        service.importFromCurlFetch("p-1", dto({ queryParameters: [{ name: "status", required: false }, { name: "status", required: true }] }), "admin-1"),
+      ).rejects.toBeInstanceOf(BusinessException);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it("rejects a duplicate HEADER parameter name (case-insensitive), without opening a transaction", async () => {
+      const { service, prisma } = makeService();
+
+      await expect(
+        service.importFromCurlFetch("p-1", dto({ headerParameters: [{ name: "X-Trace-Id", required: false }, { name: "x-trace-id", required: true }] }), "admin-1"),
+      ).rejects.toBeInstanceOf(BusinessException);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it("does not persist Request Input rows when there are no parameters or body", async () => {
+      const { service, prisma } = makeService();
+      prisma.apiConfiguration.create.mockResolvedValue({
+        apiId: "a-1",
+        projectId: "p-1",
+        apiName: "Get Widget",
+        httpMethod: "GET",
+        path: "/widgets/{id}",
+        description: null,
+        creationSource: "CURL_IMPORT",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+
+      await service.importFromCurlFetch("p-1", dto(), "admin-1");
+
+      expect(prisma.requestParameterDefinition.createMany).not.toHaveBeenCalled();
+      expect(prisma.requestBodyDefinition.create).not.toHaveBeenCalled();
     });
   });
 });

@@ -26,17 +26,15 @@ export interface InputGateSnapshotInput {
 // 006: method and URL by exact string equality, headers via
 // compareHeaderPairs (case-insensitive names, ordered repeated values), body
 // via findBodyDifferences (raw-byte-primary, JSON-structural-secondary).
-// Deliberately never filters/excludes any header (Date, nonce, boundary,
-// Authorization included) — no approved exclusion policy/version exists in
-// the current spec, so the safe default is to compare everything actually
-// sent, per RS-CMP-006's explicit prohibition on auto-exclusion.
 //
-// Returns the flat list of INPUT-phase findings, empty when fully
-// compatible — same "emptiness is the compatibility signal" convention as
-// compareHeaderPairs/compareBodies/findBodyDifferences, so callers (the
-// engine orchestrator) derive comparison_attempts.input_check_outcome as
-// simply `findings.length > 0 ? "MISMATCH" : "COMPATIBLE"` rather than this
-// function duplicating that enum itself.
+// One deliberate, approved exclusion (REVISION 3C-R02): the Authorization
+// header is stripped from both sides before diffing. Runs being compared may
+// now legitimately use different Login Form Test Accounts against the same
+// Environment/Authentication, so their Authorization header is expected to
+// differ even when everything else about the request is identical — the
+// user's explicit instruction is that such Runs must remain comparable.
+// Every other header (Date, nonce, boundary, ...) still follows RS-CMP-006's
+// original no-auto-exclusion default.
 export function checkInputCompatibility(a: InputGateSnapshotInput, b: InputGateSnapshotInput): ComparisonFindingInput[] {
   const findings: ComparisonFindingInput[] = [];
 
@@ -47,10 +45,14 @@ export function checkInputCompatibility(a: InputGateSnapshotInput, b: InputGateS
     findings.push(urlMismatchFinding());
   }
 
-  findings.push(...compareHeaderPairs(a.requestHeaders, b.requestHeaders, "REQUEST_HEADER"));
+  findings.push(...compareHeaderPairs(excludeAuthorizationHeader(a.requestHeaders), excludeAuthorizationHeader(b.requestHeaders), "REQUEST_HEADER"));
   findings.push(...findBodyDifferences(a.requestBody, b.requestBody, "REQUEST_BODY"));
 
   return findings;
+}
+
+function excludeAuthorizationHeader(headers: readonly HeaderPair[]): HeaderPair[] {
+  return headers.filter((h) => h.key.toLowerCase() !== "authorization");
 }
 
 // HTTP methods are a small, fixed, non-secret vocabulary (GET/POST/PUT/...),

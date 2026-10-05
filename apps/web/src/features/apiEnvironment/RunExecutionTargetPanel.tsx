@@ -3,6 +3,8 @@ import type {
   EnvironmentListItem,
 } from "./apiEnvironment.types"
 
+import type { AuthType, TestAccount } from "./authentication.types"
+
 import { ClassificationBadge } from "./ClassificationBadge"
 
 import { Badge } from "../../components/ui/Badge"
@@ -36,7 +38,17 @@ export function RunExecutionTargetPanel({
 
   authTypeLabel,
 
+  authType,
+
   credentialStatus,
+
+  testAccounts,
+
+  testAccountsLoading,
+
+  selectedTestAccountId,
+
+  onSelectTestAccount,
 
   runBlockers,
 }: {
@@ -52,7 +64,17 @@ export function RunExecutionTargetPanel({
 
   authTypeLabel: string | null
 
+  authType: AuthType | null
+
   credentialStatus: ApiEnvironmentConfigListItem["credentialStatus"] | null
+
+  testAccounts: TestAccount[]
+
+  testAccountsLoading: boolean
+
+  selectedTestAccountId: string | null
+
+  onSelectTestAccount: (testAccountId: string) => void
 
   runBlockers: string[]
 }) {
@@ -123,10 +145,17 @@ export function RunExecutionTargetPanel({
               <span className="mb-1.5 block text-xs font-semibold text-gray-900">
                 Full URL
               </span>
-              {config?.fullUrl ? (
-                <p className="m-0 break-all font-mono text-sm text-gray-900">
-                  {config.fullUrl}
-                </p>
+              {config?.effectiveUrl ? (
+                <>
+                  <p className="m-0 break-all font-mono text-sm text-gray-900">
+                    {config.effectiveUrl}
+                  </p>
+                  <p className="mt-1 mb-0 text-xs text-muted">
+                    {config.effectiveUrlSource === "OVERRIDE"
+                      ? "Per-API Full URL override"
+                      : "Derived from the Environment's Domain / Base URL"}
+                  </p>
+                </>
               ) : (
                 <p className="m-0 text-xs text-warning">
                   No URL configured — set this in Configuration → Endpoint. Run
@@ -137,6 +166,51 @@ export function RunExecutionTargetPanel({
                 Edited from Configuration → Endpoint, not here.
               </p>
             </Card>
+
+            {authType === "LOGIN_FORM" && (
+              <Card className="mt-4">
+                <span className="mb-1.5 block text-xs font-semibold text-gray-900">
+                  Test Account
+                </span>
+                {testAccountsLoading ? (
+                  <p className="m-0 text-xs text-muted">
+                    Loading Test Accounts...
+                  </p>
+                ) : testAccounts.length === 0 ? (
+                  <p className="m-0 text-xs text-warning">
+                    No Test Accounts configured for this Environment yet — add
+                    one from Project Settings → Environments → Authentication.
+                    Run is blocked until one exists.
+                  </p>
+                ) : (
+                  <>
+                    <select
+                      aria-label="Test Account"
+                      value={selectedTestAccountId ?? ""}
+                      onChange={(e) => onSelectTestAccount(e.target.value)}
+                      className="w-full rounded-md border border-border px-2.5 py-1.5 text-sm text-gray-900"
+                    >
+                      <option value="" disabled>
+                        Select a Test Account…
+                      </option>
+                      {testAccounts.map((account) => (
+                        <option
+                          key={account.testAccountId}
+                          value={account.testAccountId}
+                        >
+                          {account.label} ({account.username})
+                        </option>
+                      ))}
+                    </select>
+                    {!selectedTestAccountId && (
+                      <p className="m-0 mt-1.5 text-xs text-warning">
+                        Choose a Test Account before executing this Run.
+                      </p>
+                    )}
+                  </>
+                )}
+              </Card>
+            )}
 
             <Card className="mt-4">
               <h4 className="m-0 mb-2.5 text-sm font-semibold text-gray-900">
@@ -168,14 +242,8 @@ export function RunExecutionTargetPanel({
                 <div className="flex items-center justify-between">
                   <span className="text-gray-700">URL</span>
                   <Badge
-                    tone={
-                      config?.urlStatus === "CONFIGURED" ? "success" : "warning"
-                    }
-                    label={
-                      config?.urlStatus === "CONFIGURED"
-                        ? "Configured"
-                        : "Not Configured"
-                    }
+                    tone={config?.effectiveUrl ? "success" : "warning"}
+                    label={config?.effectiveUrl ? "Configured" : "Not Configured"}
                   />
                 </div>
                 {/* UI-RUN-01: which Authentication Type would be used and

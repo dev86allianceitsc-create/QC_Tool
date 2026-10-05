@@ -10,6 +10,7 @@ import { CreateRunDto } from "./dto/create-run.dto";
 import { ListRunsQueryDto } from "./dto/list-runs-query.dto";
 import { ListApiRunExecutionsQueryDto } from "./dto/list-api-run-executions-query.dto";
 import { evaluateEligibility } from "./run-eligibility.util";
+import { resolveEffectiveUrl } from "../api-environment/full-url-resolution.util";
 import { RunExecutionEngine, type PendingExecutionContext } from "./run-execution.engine";
 
 export interface RunExecutionSummary {
@@ -33,6 +34,14 @@ export interface RunExecutionListItem {
   startedAt: Date | null;
   endedAt: Date | null;
   durationMs: number | null;
+  // Phase 3 Test Case History & Run Again — frozen at dispatch time (null for
+  // executions that never reached dispatch, e.g. SKIPPED/NOT_EXECUTED). See
+  // RunExecution.authType/testCaseKey schema doc comments.
+  testCaseKey: string | null;
+  authType: string | null;
+  // Advanced "Re-run this execution" lineage only — null for every ordinary
+  // Run Again/Run API execution, see RunExecution.rerunOfExecutionId.
+  rerunOfExecutionId: string | null;
 }
 
 export interface RunDetail {
@@ -47,6 +56,10 @@ export interface RunDetail {
   endedAt: Date | null;
   note: string | null;
   summary: RunExecutionSummary;
+  // The Test Account selected for this whole Run (null when the Environment's
+  // authType is not LOGIN_FORM, or none was selected) — one value for every
+  // execution in the Run, so surfaced once here rather than repeated per item.
+  testAccountId: string | null;
   executions: RunExecutionListItem[];
 }
 
@@ -127,6 +140,13 @@ export interface RunExecutionDetail {
   // Group 6/7 Comparison AnD API v0.2 Run-extension requirement — see
   // ComparisonAvailabilityInfo doc comment. See deriveComparisonAvailability.
   comparisonAvailability: ComparisonAvailabilityInfo | null;
+  // Phase 3 Test Case History & Run Again — see RunExecutionListItem's
+  // matching fields for testCaseKey/authType/rerunOfExecutionId; testAccountId
+  // here is the parent Run's selected Test Account (Run.testAccountId).
+  testCaseKey: string | null;
+  authType: string | null;
+  testAccountId: string | null;
+  rerunOfExecutionId: string | null;
 }
 
 export interface ApiRunExecutionListItem {
@@ -140,6 +160,62 @@ export interface ApiRunExecutionListItem {
   apiVersion: string;
   databaseVersion: string;
   createdAt: Date;
+  // Phase 3 Test Case History & Run Again — see RunExecutionDetail's matching
+  // fields.
+  testCaseKey: string | null;
+  authType: string | null;
+  testAccountId: string | null;
+  rerunOfExecutionId: string | null;
+  // Phase 3 §8 Test Case History drill-down — this row's own comparison
+  // outcome, same derivation/precedence as TestCaseListItem.lastResult (see
+  // deriveTestCaseLastResult): never conflates "no comparison" (UNAVAILABLE)
+  // with "different test case" or with SAME/DIFFERENT.
+  comparisonResult: "SAME" | "DIFFERENT" | "INITIAL_RUN" | "UNAVAILABLE";
+  // The baseline Snapshot's completedAt this row was actually compared
+  // against (null whenever comparisonResult is INITIAL_RUN/UNAVAILABLE with
+  // no baseline at all) — resolved straight from baselineSnapshotId, no new
+  // storage. See deriveComparedWithAt.
+  comparedWithAt: Date | null;
+  // The AUTO_EXECUTION Comparison this row's own execution sourced, when one
+  // exists (same lookup as deriveComparisonAvailability) — lets a SAME/
+  // DIFFERENT row's "View Differences" action open that Comparison directly
+  // instead of the execution's own detail page. Null whenever comparisonResult
+  // is not SAME/DIFFERENT.
+  comparisonId: string | null;
+}
+
+// Phase 3 Test Case History & Run Again (§7/§8) — one card per distinct
+// testCaseKey for this API, backing the Run History tab's grouped view.
+// lastResult follows the same derivation precedence as
+// RunsService.deriveTestCaseLastResult: INITIAL_RUN (no baseline existed yet,
+// concept A had nothing to chain to), SAME/DIFFERENT (concept C — the only
+// two values ever shown as an automatic comparison's actual outcome), or
+// UNAVAILABLE (a baseline candidate existed but no Comparison ever completed
+// against it — blocked at ELIGIBILITY/INPUT (concept B), no target Snapshot
+// was produced, or it is still in flight). Never conflates "no comparison
+// result yet" with "different test case" — a card's identity is testCaseKey
+// alone.
+export interface TestCaseListItem {
+  testCaseKey: string;
+  apiId: string;
+  environmentId: string;
+  environmentName: string;
+  authType: string | null;
+  testAccountId: string | null;
+  testAccountLabel: string | null;
+  // The latest execution's raw submitted Request Input (RunExecution.
+  // requestInputSnapshot) — rendering is a frontend concern, not reshaped
+  // here.
+  inputSummary: Prisma.JsonValue | null;
+  lastRunAt: Date;
+  lastExecutionId: string;
+  lastResult: "SAME" | "DIFFERENT" | "INITIAL_RUN" | "UNAVAILABLE";
+  runCount: number;
+  // Stable display ordinal — ranked by this Test Case's first-ever run, which
+  // never changes once set. Deliberately independent of lastRunAt (the list
+  // itself still sorts most-recently-run first, below): a card's number must
+  // never shift just because it, or any other card, was Run Again.
+  testCaseNumber: number;
 }
 
 @Injectable()
@@ -160,7 +236,11 @@ export class RunsService {
   // fire-and-forget after the transaction commits — the response returns
   // immediately with the created Run/executions; callers poll getRun /
   // getRunExecution for live status.
-  async createRun(projectId: string, dto: CreateRunDto, actorUserId: string): Promise<RunDetail> {
+  // extra is populated only by reRunExecution (§5, advanced) — ordinary
+  // createRun callers (the HTTP endpoint, and runAgain below) never pass it.
+  // Kept as a trailing optional parameter rather than a second method so the
+  // ~140-line validation/transaction body here is never duplicated.
+  async createRun(projectId: string, dto: CreateRunDto, actorUserId: string, extra?: { rerunOfExecutionId?: string; forcedBaselineSourceExecutionId?: string }): Promise<RunDetail> {
     if (dto.runType === "SINGLE" && dto.executions.length !== 1) {
       throw new BusinessException(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "A Single Run must contain exactly one execution");
     }
@@ -181,6 +261,13 @@ export class RunsService {
       }
       if (!environment.allowRun) {
         throw new BusinessException(HttpStatus.FORBIDDEN, "RUN_NOT_ALLOWED", "This Environment does not allow Run");
+      }
+
+      if (dto.testAccountId) {
+        const testAccount = await tx.testAccount.findFirst({ where: { testAccountId: dto.testAccountId, environmentId: dto.environmentId } });
+        if (!testAccount) {
+          throw new BusinessException(HttpStatus.NOT_FOUND, "NOT_FOUND", "Test Account does not exist in this Environment");
+        }
       }
 
       const apis = await tx.apiConfiguration.findMany({ where: { apiId: { in: apiIds }, projectId, deletedAt: null } });
@@ -204,7 +291,8 @@ export class RunsService {
       const evaluations = dto.executions.map((exec, idx) => {
         const api = apiById.get(exec.apiId)!;
         const config = configByApiId.get(exec.apiId) ?? null;
-        const reasonCode = evaluateEligibility(api.path, config, paramDefsByApiId.get(exec.apiId) ?? [], {
+        const effectiveUrl = resolveEffectiveUrl(config?.fullUrl, environment.baseUrl, api.path).url;
+        const reasonCode = evaluateEligibility(api.path, effectiveUrl, paramDefsByApiId.get(exec.apiId) ?? [], {
           pathValues: exec.requestValues.pathValues ?? {},
           queryValues: exec.requestValues.queryValues ?? {},
           headerValues: exec.requestValues.headerValues ?? {},
@@ -221,7 +309,14 @@ export class RunsService {
       }
 
       const createdRun = await tx.run.create({
-        data: { projectId, environmentId: dto.environmentId, createdBy: actorUserId, runType: dto.runType, runStatus: "PENDING" },
+        data: {
+          projectId,
+          environmentId: dto.environmentId,
+          testAccountId: dto.testAccountId ?? null,
+          createdBy: actorUserId,
+          runType: dto.runType,
+          runStatus: "PENDING",
+        },
       });
 
       await tx.runExecution.createMany({
@@ -235,6 +330,19 @@ export class RunsService {
           apiVersion: exec.apiVersion?.trim() || "UNKNOWN",
           databaseVersion: exec.databaseVersion?.trim() || "UNKNOWN",
           responseBodyIsTruncated: false,
+          // Phase 3 Test Case History & Run Again — frozen once here,
+          // regardless of eligibility/eventual dispatch outcome, as the
+          // literal raw input "Run Again" replays later (see schema doc
+          // comment on RunExecution.requestInputSnapshot).
+          requestInputSnapshot: {
+            pathValues: exec.requestValues.pathValues ?? {},
+            queryValues: exec.requestValues.queryValues ?? {},
+            headerValues: exec.requestValues.headerValues ?? {},
+            bodyValue: exec.requestValues.bodyValue ?? "",
+          } satisfies Prisma.JsonObject,
+          // §5 advanced "Re-run this execution" lineage/audit only — null for
+          // every ordinary Run Again/Run API execution.
+          rerunOfExecutionId: extra?.rerunOfExecutionId ?? null,
         })),
       });
 
@@ -265,6 +373,7 @@ export class RunsService {
             headerValues: e.exec.requestValues.headerValues ?? {},
             bodyValue: e.exec.requestValues.bodyValue ?? "",
           },
+          forcedBaselineSourceExecutionId: extra?.forcedBaselineSourceExecutionId ?? null,
         }));
 
       return { run: createdRun, executions: createdExecutions, pending: pendingExecutions };
@@ -398,6 +507,10 @@ export class RunsService {
       durationMs: exec.durationMs,
       snapshotSave: await this.deriveSnapshotSave(exec),
       comparisonAvailability: await this.deriveComparisonAvailability(exec),
+      testCaseKey: exec.testCaseKey,
+      authType: exec.authType,
+      testAccountId: run.testAccountId,
+      rerunOfExecutionId: exec.rerunOfExecutionId,
     };
   }
 
@@ -416,6 +529,9 @@ export class RunsService {
     if (query.environmentId) {
       where.run = { environmentId: query.environmentId };
     }
+    if (query.testCaseKey) {
+      where.testCaseKey = query.testCaseKey;
+    }
 
     const [rows, totalItems] = await Promise.all([
       this.prisma.runExecution.findMany({
@@ -429,23 +545,109 @@ export class RunsService {
     ]);
 
     return {
-      items: rows.map((r) => ({
-        runId: r.runId,
-        executionId: r.runExecutionId,
-        runType: r.run.runType,
-        environmentId: r.run.environmentId,
-        executionStatus: r.executionStatus,
-        executionOutcome: r.executionOutcome,
-        httpStatus: r.httpStatus,
-        apiVersion: r.apiVersion,
-        databaseVersion: r.databaseVersion,
-        createdAt: r.createdAt,
-      })),
+      items: await Promise.all(
+        rows.map(async (r) => ({
+          runId: r.runId,
+          executionId: r.runExecutionId,
+          runType: r.run.runType,
+          environmentId: r.run.environmentId,
+          executionStatus: r.executionStatus,
+          executionOutcome: r.executionOutcome,
+          httpStatus: r.httpStatus,
+          apiVersion: r.apiVersion,
+          databaseVersion: r.databaseVersion,
+          createdAt: r.createdAt,
+          testCaseKey: r.testCaseKey,
+          authType: r.authType,
+          testAccountId: r.run.testAccountId,
+          rerunOfExecutionId: r.rerunOfExecutionId,
+          comparisonResult: await this.deriveTestCaseLastResult(r),
+          comparedWithAt: await this.deriveComparedWithAt(r),
+          comparisonId: (await this.deriveComparisonAvailability(r))?.comparisonId ?? null,
+        })),
+      ),
       page,
       pageSize,
       totalItems,
       totalPages: Math.max(1, Math.ceil(totalItems / pageSize)),
     };
+  }
+
+  // Phase 3 Test Case History & Run Again (§7/§8) — one row per distinct
+  // testCaseKey, each the group's latest execution (idx_run_executions_
+  // test_case_key_sent_at backs both the distinct-on ordering here and the
+  // groupBy count below). requestSentAt is never null whenever testCaseKey is
+  // set — run-execution.engine.ts's dispatchOne builds both in the same
+  // requestTrace object, spread into every terminal update alongside
+  // testCaseKey — so ordering by it (rather than createdAt) is safe and
+  // matches the index. Not paginated: cardinality is one row per logical test
+  // case for a single API, not per execution.
+  async listTestCases(projectId: string, apiId: string): Promise<TestCaseListItem[]> {
+    const api = await this.prisma.apiConfiguration.findFirst({ where: { apiId, projectId, deletedAt: null } });
+    if (!api) {
+      throw new BusinessException(HttpStatus.NOT_FOUND, "NOT_FOUND", "API does not exist in this Project");
+    }
+
+    const where: Prisma.RunExecutionWhereInput = { apiId, testCaseKey: { not: null } };
+    const latestPerKey = await this.prisma.runExecution.findMany({
+      where,
+      distinct: ["testCaseKey"],
+      orderBy: [{ testCaseKey: "asc" }, { requestSentAt: "desc" }],
+      include: { run: { include: { environment: true, testAccount: true } } },
+    });
+    if (latestPerKey.length === 0) {
+      return [];
+    }
+
+    const testCaseKeys = latestPerKey.map((exec) => exec.testCaseKey!);
+    const runCounts = await this.prisma.runExecution.groupBy({
+      by: ["testCaseKey"],
+      where: { ...where, testCaseKey: { in: testCaseKeys } },
+      _count: { testCaseKey: true },
+      _min: { requestSentAt: true },
+    });
+    const runCountByKey = new Map(runCounts.map((row) => [row.testCaseKey!, row._count.testCaseKey]));
+    // _min.requestSentAt is this Test Case's first-ever run — unlike lastRunAt
+    // (the latest execution's own requestSentAt, which moves on every Run
+    // Again), this never changes once a testCaseKey has run at least once, so
+    // it is the basis for the stable testCaseNumber below, not list position.
+    const firstRunAtByKey = new Map(runCounts.map((row) => [row.testCaseKey!, row._min.requestSentAt!]));
+
+    const items = await Promise.all(
+      latestPerKey.map(async (exec) => ({
+        testCaseKey: exec.testCaseKey!,
+        apiId: exec.apiId,
+        environmentId: exec.run.environmentId,
+        environmentName: exec.run.environment.environmentName,
+        authType: exec.authType,
+        testAccountId: exec.run.testAccountId,
+        testAccountLabel: exec.run.testAccount?.label ?? null,
+        inputSummary: exec.requestInputSnapshot,
+        lastRunAt: exec.requestSentAt ?? exec.createdAt,
+        lastExecutionId: exec.runExecutionId,
+        lastResult: await this.deriveTestCaseLastResult(exec),
+        runCount: runCountByKey.get(exec.testCaseKey!) ?? 1,
+        firstRunAt: firstRunAtByKey.get(exec.testCaseKey!) ?? exec.requestSentAt ?? exec.createdAt,
+      })),
+    );
+
+    // Bug fix (Run Again reshuffling "Test Case N"): the number must be
+    // assigned by first-run order, computed once per testCaseKey here, and
+    // then carried through regardless of how the list below gets sorted for
+    // display. Ties (identical firstRunAt) broken by testCaseKey so the
+    // ranking is fully deterministic.
+    const numberByKey = new Map(
+      [...items]
+        .sort(
+          (a, b) =>
+            a.firstRunAt.getTime() - b.firstRunAt.getTime() || a.testCaseKey.localeCompare(b.testCaseKey),
+        )
+        .map((item, index) => [item.testCaseKey, index + 1] as const),
+    );
+
+    return items
+      .map(({ firstRunAt, ...item }) => ({ ...item, testCaseNumber: numberByKey.get(item.testCaseKey)! }))
+      .sort((a, b) => b.lastRunAt.getTime() - a.lastRunAt.getTime());
   }
 
   // AnD API Group 5 Snapshot §7 Run Extension: reasonCode domain beyond what
@@ -538,6 +740,54 @@ export class RunsService {
     };
   }
 
+  // Phase 3 Test Case History & Run Again (§8) — the Test Case card's
+  // lastResult, built on top of deriveComparisonAvailability (same
+  // Execution-level columns, no re-derivation of baseline/availability
+  // logic). INITIAL_RUN and UNAVAILABLE are concept-A/B outcomes; SAME/
+  // DIFFERENT is the only pair ever read from a Comparison's own result
+  // (concept C) — never conflated with "no comparison" or "blocked".
+  private async deriveTestCaseLastResult(exec: RunExecution): Promise<TestCaseListItem["lastResult"]> {
+    const availability = await this.deriveComparisonAvailability(exec);
+    if (!availability) {
+      return "UNAVAILABLE";
+    }
+    if (availability.reasonCode === "NO_BASELINE") {
+      return "INITIAL_RUN";
+    }
+    if (!availability.comparisonId) {
+      return "UNAVAILABLE";
+    }
+
+    const latestAttempt = await this.prisma.comparisonAttempt.findFirst({
+      where: { comparisonId: availability.comparisonId },
+      orderBy: { attemptNumber: "desc" },
+      select: { processingStatus: true, comparisonResult: true },
+    });
+    if (latestAttempt?.processingStatus === "COMPLETED" && (latestAttempt.comparisonResult === "SAME" || latestAttempt.comparisonResult === "DIFFERENT")) {
+      return latestAttempt.comparisonResult;
+    }
+    return "UNAVAILABLE";
+  }
+
+  // Phase 3 Test Case History & Run Again (§8 drill-down) — "Compared with:
+  // <timestamp>" resolves straight from the Execution's own locked
+  // baselineSnapshotId (set once, never reselected, per deriveComparisonAvailability's
+  // doc comment) to that Snapshot's completedAt. Null whenever no baseline
+  // was ever selected for this row (concept A found nothing, or this row
+  // never reached comparison at all) — never fabricated from comparedWithAt
+  // being merely unset.
+  private async deriveComparedWithAt(exec: RunExecution): Promise<Date | null> {
+    const availability = await this.deriveComparisonAvailability(exec);
+    if (!availability?.baselineSnapshotId) {
+      return null;
+    }
+    const baseline = await this.prisma.snapshot.findUnique({
+      where: { snapshotId: availability.baselineSnapshotId },
+      select: { completedAt: true },
+    });
+    return baseline?.completedAt ?? null;
+  }
+
   private computeSummary(executions: RunExecution[]): RunExecutionSummary {
     return {
       totalApis: executions.length,
@@ -562,6 +812,9 @@ export class RunsService {
       startedAt: e.startedAt,
       endedAt: e.endedAt,
       durationMs: e.durationMs,
+      testCaseKey: e.testCaseKey,
+      authType: e.authType,
+      rerunOfExecutionId: e.rerunOfExecutionId,
     };
   }
 
@@ -578,7 +831,103 @@ export class RunsService {
       endedAt: run.endedAt,
       note: run.note,
       summary: this.computeSummary(executions),
+      testAccountId: run.testAccountId,
       executions: executions.map((e) => this.toExecutionListItem(e)),
+    };
+  }
+
+  // Plan §4 "Run Again" — a thin convenience over createRun: look up a Test
+  // Case's most recent execution's saved input and resubmit it unchanged.
+  // Baseline selection then happens exactly like any fresh dispatch (same
+  // testCaseKey ⇒ selectBaselineSnapshot naturally finds this execution's own
+  // Snapshot as the new one's baseline) — no new dispatch mode, no lineage
+  // column, no new sourceKind. Ordinary "Run API" and "Run Again" are the same
+  // backend path by construction.
+  async runAgain(projectId: string, apiId: string, executionId: string, actorUserId: string): Promise<RunDetail> {
+    const execution = await this.prisma.runExecution.findFirst({
+      where: { runExecutionId: executionId, apiId, run: { projectId } },
+      include: { run: true },
+    });
+    if (!execution) {
+      throw new BusinessException(HttpStatus.NOT_FOUND, "NOT_FOUND", "Run Execution does not exist");
+    }
+    if (!execution.requestInputSnapshot) {
+      throw new BusinessException(
+        HttpStatus.UNPROCESSABLE_ENTITY,
+        "NO_SAVED_INPUT",
+        "This execution has no saved Request Input to run again (it predates this feature)",
+      );
+    }
+
+    const dto = this.buildReplayDto(execution, apiId, execution.requestInputSnapshot as Prisma.JsonObject);
+    return this.createRun(projectId, dto, actorUserId);
+  }
+
+  // Plan §5 "Re-run this execution" (advanced) — same input-resolution as
+  // runAgain, but forces the comparison baseline to this specific source
+  // execution's own produced Snapshot (see RunExecutionEngine.
+  // resolveForcedBaseline) instead of letting testCaseKey auto-select the
+  // latest one, and records rerunOfExecutionId for lineage/audit display.
+  // Scope: only post-migration source executions (requestInputSnapshot
+  // present) are replayable — see §9/requestInputSnapshot doc comment: no
+  // faithful raw-input backfill exists for pre-migration rows, and since this
+  // migration has not yet shipped to any running environment, no such row can
+  // exist in practice. Reconstructing a request from the frozen *resolved*
+  // trace instead (lossy, and its headers are already redaction-masked for
+  // display) was judged worse than refusing, so NOT_REPLAYABLE covers both
+  // "never dispatched" and "pre-migration" cases uniformly.
+  async reRunExecution(projectId: string, apiId: string, executionId: string, actorUserId: string): Promise<RunDetail> {
+    const execution = await this.prisma.runExecution.findFirst({
+      where: { runExecutionId: executionId, apiId, run: { projectId } },
+      include: { run: true },
+    });
+    if (!execution) {
+      throw new BusinessException(HttpStatus.NOT_FOUND, "NOT_FOUND", "Run Execution does not exist");
+    }
+    if (!execution.requestInputSnapshot) {
+      throw new BusinessException(
+        HttpStatus.UNPROCESSABLE_ENTITY,
+        "NOT_REPLAYABLE",
+        "This execution has nothing replayable saved (it was never dispatched, or predates this feature)",
+      );
+    }
+
+    const dto = this.buildReplayDto(execution, apiId, execution.requestInputSnapshot as Prisma.JsonObject);
+    return this.createRun(projectId, dto, actorUserId, {
+      rerunOfExecutionId: executionId,
+      forcedBaselineSourceExecutionId: executionId,
+    });
+  }
+
+  // Shared by runAgain/reRunExecution — both resubmit the exact same saved
+  // Request Input through createRun's one validation/dispatch path (plan §4:
+  // "factor into one small private helper so both paths share it instead of
+  // duplicating ~15 lines"); they differ only in the optional `extra` they
+  // pass to createRun, not in how the DTO itself is built.
+  private buildReplayDto(execution: RunExecution & { run: Run }, apiId: string, snapshot: Prisma.JsonObject): CreateRunDto {
+    const requestInput = snapshot as unknown as {
+      pathValues?: Record<string, string>;
+      queryValues?: Record<string, string>;
+      headerValues?: Record<string, string>;
+      bodyValue?: string;
+    };
+    return {
+      runType: "SINGLE",
+      environmentId: execution.run.environmentId,
+      testAccountId: execution.run.testAccountId ?? undefined,
+      executions: [
+        {
+          apiId,
+          requestValues: {
+            pathValues: requestInput.pathValues ?? {},
+            queryValues: requestInput.queryValues ?? {},
+            headerValues: requestInput.headerValues ?? {},
+            bodyValue: requestInput.bodyValue ?? "",
+          },
+          apiVersion: execution.apiVersion,
+          databaseVersion: execution.databaseVersion,
+        },
+      ],
     };
   }
 }

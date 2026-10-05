@@ -85,19 +85,38 @@ function renderTab(
   overrides: Partial<{
     comparisonId: string
     phase: ComparisonFindingPhase
+    projectId: string
+    apiId: string
     onSessionExpired: () => void
     onAccessDenied: () => void
+    detailProcessingStatus: ComparisonProcessingStatus | null
   }> = {},
 ) {
   return render(
     <ComparisonFindingsTab
       comparisonId={overrides.comparisonId ?? "cmp-1"}
       phase={overrides.phase ?? "OUTPUT"}
+      projectId={overrides.projectId}
+      apiId={overrides.apiId}
       accessToken="token-1"
       onSessionExpired={overrides.onSessionExpired ?? vi.fn()}
       onAccessDenied={overrides.onAccessDenied ?? vi.fn()}
+      detailProcessingStatus={overrides.detailProcessingStatus ?? null}
     />,
   )
+}
+
+function makeBodyFinding(
+  overrides: Partial<ComparisonFindingItemDto> = {},
+): ComparisonFindingItemDto {
+  return makeFinding({
+    component: "RESPONSE_BODY",
+    location: { path: "$.StartTime" },
+    a: makeSide({ presenceKind: "VALUE", safeText: "100", isRedacted: false }),
+    b: makeSide({ presenceKind: "VALUE", safeText: "150", isRedacted: false }),
+    safeSummary: "$.StartTime differs",
+    ...overrides,
+  })
 }
 
 describe("ComparisonFindingsTab", () => {
@@ -246,6 +265,48 @@ describe("ComparisonFindingsTab", () => {
     },
   )
 
+  it("refetches when the parent's detailProcessingStatus transitions, so a tab left open updates once processing finishes", async () => {
+    const fetchMock = stubFetch(() =>
+      makeResult({
+        processingStatus: "RUNNING",
+        items: [],
+        totalItems: 0,
+      }),
+    )
+
+    const { rerender } = renderTab({ detailProcessingStatus: "QUEUED" })
+
+    expect(
+      await screen.findByText(
+        "Still processing — this tab will update once the comparison finishes.",
+      ),
+    ).toBeInTheDocument()
+
+    fetchMock.mockClear()
+    stubFetch(() =>
+      makeResult({
+        processingStatus: "COMPLETED",
+        items: [],
+        totalItems: 0,
+      }),
+    )
+
+    rerender(
+      <ComparisonFindingsTab
+        comparisonId="cmp-1"
+        phase="OUTPUT"
+        accessToken="token-1"
+        onSessionExpired={vi.fn()}
+        onAccessDenied={vi.fn()}
+        detailProcessingStatus="COMPLETED"
+      />,
+    )
+
+    expect(
+      await screen.findByText("No output differences found."),
+    ).toBeInTheDocument()
+  })
+
   it("shows an error message with a Retry button on failure, and Retry re-fetches", async () => {
     const fetchMock = vi
       .fn()
@@ -296,5 +357,315 @@ describe("ComparisonFindingsTab", () => {
     expect(screen.queryByText(/^raw$/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/view raw/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/redacted/i)).not.toBeInTheDocument()
+  })
+
+  it("shows real A/B values and a Difference summary for a non-sensitive header whose value changed", async () => {
+    stubFetch(
+      makeResult({
+        items: [
+          makeFinding({
+            component: "RESPONSE_HEADER",
+            location: { path: "$.headers.age" },
+            a: makeSide({
+              presenceKind: "VALUE",
+              displayKind: "string",
+              safeText: "123",
+              isRedacted: false,
+            }),
+            b: makeSide({
+              presenceKind: "VALUE",
+              displayKind: "string",
+              safeText: "167",
+              isRedacted: false,
+            }),
+            safeSummary: 'Header "age" value differs',
+          }),
+        ],
+        totalItems: 1,
+      }),
+    )
+
+    renderTab()
+
+    expect(await screen.findByText("123")).toBeInTheDocument()
+    expect(screen.getByText("167")).toBeInTheDocument()
+    expect(screen.getByText("Difference: 123 → 167")).toBeInTheDocument()
+    expect(screen.queryByText("Has value")).not.toBeInTheDocument()
+  })
+
+  it("still shows the presence label when a side has no content box (ABSENT/NULL/EMPTY), but suppresses it once a real value box renders", async () => {
+    stubFetch(
+      makeResult({
+        items: [
+          makeFinding({
+            a: makeSide({
+              presenceKind: "ABSENT",
+              displayKind: "string",
+              safeText: null,
+              isRedacted: false,
+            }),
+            b: makeSide({
+              presenceKind: "VALUE",
+              displayKind: "string",
+              safeText: "value-b",
+              isRedacted: false,
+            }),
+          }),
+        ],
+        totalItems: 1,
+      }),
+    )
+
+    renderTab()
+
+    expect(await screen.findByText("Does not exist")).toBeInTheDocument()
+    expect(screen.getByText("value-b")).toBeInTheDocument()
+    expect(screen.queryByText("Has value")).not.toBeInTheDocument()
+  })
+
+  it("collapses a redacted difference to the fixed protected-value phrase instead of diffing the literal [REDACTED] text", async () => {
+    stubFetch(
+      makeResult({
+        items: [
+          makeFinding({
+            component: "REQUEST_HEADER",
+            location: { path: "authorization" },
+            a: makeSide({
+              presenceKind: "VALUE",
+              displayKind: "text",
+              safeText: "[REDACTED]",
+              isRedacted: true,
+            }),
+            b: makeSide({
+              presenceKind: "VALUE",
+              displayKind: "text",
+              safeText: "[REDACTED]",
+              isRedacted: true,
+            }),
+          }),
+        ],
+        totalItems: 1,
+      }),
+    )
+
+    renderTab()
+
+    expect(await screen.findByText("Difference detected in protected value")).toBeInTheDocument()
+    expect(screen.getAllByText("[REDACTED]")).toHaveLength(2)
+  })
+
+  it("renders no Difference summary line when both sides genuinely have the same value", async () => {
+    stubFetch(
+      makeResult({
+        items: [
+          makeFinding({
+            a: makeSide({
+              presenceKind: "VALUE",
+              displayKind: "string",
+              safeText: "same-val",
+              isRedacted: false,
+            }),
+            b: makeSide({
+              presenceKind: "VALUE",
+              displayKind: "string",
+              safeText: "same-val",
+              isRedacted: false,
+            }),
+          }),
+        ],
+        totalItems: 1,
+      }),
+    )
+
+    renderTab()
+
+    await screen.findByText("Status code differs")
+    expect(screen.queryByText(/^Difference:/)).not.toBeInTheDocument()
+  })
+
+  it("hides the Ignore fields button when projectId/apiId are not provided", async () => {
+    stubFetch(makeResult({ items: [makeBodyFinding()], totalItems: 1 }))
+
+    renderTab()
+
+    await screen.findByText("$.StartTime differs")
+    expect(screen.queryByText("Ignore fields")).not.toBeInTheDocument()
+  })
+
+  it("hides the Ignore fields button on the INPUT phase even when projectId/apiId are provided", async () => {
+    stubFetch(
+      makeResult({
+        phase: "INPUT",
+        items: [makeBodyFinding()],
+        totalItems: 1,
+      }),
+    )
+
+    renderTab({ phase: "INPUT", projectId: "p1", apiId: "a1" })
+
+    await screen.findByText("$.StartTime differs")
+    expect(screen.queryByText("Ignore fields")).not.toBeInTheDocument()
+  })
+
+  it("shows the Ignore fields button on OUTPUT when projectId/apiId are provided", async () => {
+    stubFetch(makeResult({ items: [makeBodyFinding()], totalItems: 1 }))
+
+    renderTab({ projectId: "p1", apiId: "a1" })
+
+    expect(await screen.findByText("Ignore fields")).toBeInTheDocument()
+  })
+
+  it("shows a checkbox only on RESPONSE_BODY findings with a path location, not on HTTP_STATUS/RESPONSE_HEADER findings", async () => {
+    stubFetch(
+      makeResult({
+        items: [
+          makeBodyFinding({ findingId: "f-body", location: { path: "$.StartTime" } }),
+          makeFinding({
+            findingId: "f-status",
+            component: "HTTP_STATUS",
+            location: null,
+            safeSummary: "Status code differs",
+          }),
+          makeFinding({
+            findingId: "f-header",
+            component: "RESPONSE_HEADER",
+            location: { path: "$.headers.age" },
+            safeSummary: "Header value differs",
+          }),
+        ],
+        totalItems: 3,
+      }),
+    )
+
+    renderTab({ projectId: "p1", apiId: "a1" })
+
+    fireEvent.click(await screen.findByText("Ignore fields"))
+
+    expect(
+      screen.getByLabelText("Select $.StartTime to ignore"),
+    ).toBeInTheDocument()
+    expect(screen.getAllByRole("checkbox")).toHaveLength(1)
+  })
+
+  it("Select all selects only the ignorable findings on the page, and Ignore selected (N) reflects the count", async () => {
+    stubFetch(
+      makeResult({
+        items: [
+          makeBodyFinding({ findingId: "f-1", location: { path: "$.StartTime" } }),
+          makeBodyFinding({ findingId: "f-2", location: { path: "$.EndTime" } }),
+          makeFinding({
+            findingId: "f-status",
+            component: "HTTP_STATUS",
+            location: null,
+            safeSummary: "Status code differs",
+          }),
+        ],
+        totalItems: 3,
+      }),
+    )
+
+    renderTab({ projectId: "p1", apiId: "a1" })
+
+    fireEvent.click(await screen.findByText("Ignore fields"))
+
+    expect(screen.getByText("Ignore selected (0)")).toBeDisabled()
+
+    fireEvent.click(screen.getByText("Select all"))
+
+    expect(screen.getByText("Ignore selected (2)")).not.toBeDisabled()
+    expect(
+      (screen.getByLabelText("Select $.StartTime to ignore") as HTMLInputElement)
+        .checked,
+    ).toBe(true)
+    expect(
+      (screen.getByLabelText("Select $.EndTime to ignore") as HTMLInputElement)
+        .checked,
+    ).toBe(true)
+
+    fireEvent.click(screen.getByText("Deselect all"))
+    expect(screen.getByText("Ignore selected (0)")).toBeDisabled()
+  })
+
+  it("Cancel exits selection mode and clears the selection", async () => {
+    stubFetch(makeResult({ items: [makeBodyFinding()], totalItems: 1 }))
+
+    renderTab({ projectId: "p1", apiId: "a1" })
+
+    fireEvent.click(await screen.findByText("Ignore fields"))
+    fireEvent.click(screen.getByLabelText("Select $.StartTime to ignore"))
+    expect(screen.getByText("Ignore selected (1)")).toBeInTheDocument()
+
+    fireEvent.click(screen.getByText("Cancel"))
+
+    expect(screen.queryByText("Ignore selected (1)")).not.toBeInTheDocument()
+    expect(screen.getByText("Ignore fields")).toBeInTheDocument()
+  })
+
+  it("clicking Ignore selected opens a single confirmation dialog for the whole selection", async () => {
+    stubFetch(
+      makeResult({
+        items: [
+          makeBodyFinding({ findingId: "f-1", location: { path: "$.StartTime" } }),
+          makeBodyFinding({ findingId: "f-2", location: { path: "$.EndTime" } }),
+        ],
+        totalItems: 2,
+      }),
+    )
+
+    renderTab({ projectId: "p1", apiId: "a1" })
+
+    fireEvent.click(await screen.findByText("Ignore fields"))
+    fireEvent.click(screen.getByText("Select all"))
+    fireEvent.click(screen.getByText("Ignore selected (2)"))
+
+    expect(await screen.findByText("Ignore 2 fields")).toBeInTheDocument()
+    expect(
+      screen.getByText("Apply these Ignore Rules to:"),
+    ).toBeInTheDocument()
+    // One occurrence in the underlying finding card's location line, one in
+    // the dialog's selected-paths list — confirms a single dialog covers the
+    // whole selection rather than one dialog per field.
+    expect(screen.getAllByText("$.StartTime")).toHaveLength(2)
+    expect(screen.getAllByText("$.EndTime")).toHaveLength(2)
+  })
+
+  it("a successful bulk create exits selection mode and shows the created-rules feedback message", async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+      const s = String(url)
+      if (s.includes("/ignore-rules/bulk")) {
+        return Promise.resolve(
+          mockJsonResponse(201, {
+            created: [{ ignoreRuleId: "r1" }],
+            skippedCount: 0,
+          }),
+        )
+      }
+      if (s.includes("/findings")) {
+        return Promise.resolve(
+          mockJsonResponse(
+            200,
+            makeResult({ items: [makeBodyFinding()], totalItems: 1 }),
+          ),
+        )
+      }
+      void init
+      return Promise.resolve(mockJsonResponse(404, {}))
+    })
+    vi.stubGlobal("fetch", fetchMock)
+
+    renderTab({ projectId: "p1", apiId: "a1" })
+
+    fireEvent.click(await screen.findByText("Ignore fields"))
+    fireEvent.click(screen.getByLabelText("Select $.StartTime to ignore"))
+    fireEvent.click(screen.getByText("Ignore selected (1)"))
+
+    await screen.findByText("Ignore 1 field")
+    fireEvent.click(screen.getByText("Confirm"))
+
+    expect(
+      await screen.findByText("Created 1 Ignore Rule."),
+    ).toBeInTheDocument()
+    expect(screen.queryByText("Ignore 1 field")).not.toBeInTheDocument()
+    expect(screen.getByText("Ignore fields")).toBeInTheDocument()
   })
 })

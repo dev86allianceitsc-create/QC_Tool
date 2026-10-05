@@ -12,23 +12,33 @@ function config(
   overrides: Partial<AuthenticationConfiguration> = {},
 ): AuthenticationConfiguration {
   return {
-    apiId: "a1",
-
     environmentId: "e1",
 
     authType: "NONE",
 
     credentialStatus: "NOT_REQUIRED",
 
-    loginUrl: null,
+    loginMode: null,
 
-    username: null,
+    loginUrl: null,
 
     usernameField: null,
 
     passwordField: null,
 
-    tokenResponsePath: null,
+    importMethod: null,
+
+    importUrl: null,
+
+    importHeaders: null,
+
+    importBodyFormat: null,
+
+    importBodyFields: null,
+
+    importUsernameLocation: null,
+
+    importPasswordLocation: null,
 
     updatedAt: "2026-09-22T09:00:00.000Z",
 
@@ -53,27 +63,18 @@ function stubFetch(body?: unknown, status = 200) {
 }
 
 describe("useAuthentication — load", () => {
-  it("GETs the Authentication Configuration for the selected API and Environment", async () => {
+  it("GETs the Authentication Configuration for the selected Environment", async () => {
     const fetchMock = stubFetch(config())
 
     const { result } = renderHook(() =>
-      useAuthentication(
-        "p1",
-        "a1",
-        "e1",
-        "token-1",
-        onSessionExpired,
-        onAccessDenied,
-      ),
+      useAuthentication("p1", "e1", "token-1", onSessionExpired, onAccessDenied),
     )
 
     await waitFor(() => expect(result.current.loading).toBe(false))
 
     const [url] = fetchMock.mock.calls[0]
 
-    expect(String(url)).toContain(
-      "/projects/p1/apis/a1/environment-configs/e1/authentication",
-    )
+    expect(String(url)).toContain("/projects/p1/environments/e1/authentication")
 
     expect(result.current.config).toEqual(config())
 
@@ -86,14 +87,7 @@ describe("useAuthentication — load", () => {
     )
 
     const { result } = renderHook(() =>
-      useAuthentication(
-        "p1",
-        "a1",
-        "e1",
-        "token-1",
-        onSessionExpired,
-        onAccessDenied,
-      ),
+      useAuthentication("p1", "e1", "token-1", onSessionExpired, onAccessDenied),
     )
 
     await waitFor(() => expect(result.current.loading).toBe(false))
@@ -106,22 +100,15 @@ describe("useAuthentication — load", () => {
   })
 
   it("surfaces a non-auth failure inline and keeps config null", async () => {
-    stubFetch({ errorCode: "NOT_FOUND", message: "API not found" }, 404)
+    stubFetch({ errorCode: "NOT_FOUND", message: "Environment not found" }, 404)
 
     const { result } = renderHook(() =>
-      useAuthentication(
-        "p1",
-        "a1",
-        "e1",
-        "token-1",
-        onSessionExpired,
-        onAccessDenied,
-      ),
+      useAuthentication("p1", "e1", "token-1", onSessionExpired, onAccessDenied),
     )
 
     await waitFor(() => expect(result.current.loading).toBe(false))
 
-    expect(result.current.error).toBe("API not found")
+    expect(result.current.error).toBe("Environment not found")
 
     expect(result.current.config).toBeNull()
   })
@@ -130,23 +117,15 @@ describe("useAuthentication — load", () => {
     const fetchMock = stubFetch(config())
 
     renderHook(() =>
-      useAuthentication(
-        "p1",
-        "a1",
-        null,
-        "token-1",
-        onSessionExpired,
-        onAccessDenied,
-      ),
+      useAuthentication("p1", null, "token-1", onSessionExpired, onAccessDenied),
     )
 
     expect(fetchMock).not.toHaveBeenCalled()
   })
 })
 
-// REQ-SEC-002: an Authentication Configuration belongs to one API in one
-
-// Environment. Nothing may carry over when the Environment changes.
+// REQ-SEC-002: an Authentication Configuration belongs to one Environment.
+// Nothing may carry over when the Environment changes.
 
 describe("useAuthentication — per-Environment isolation", () => {
   it("re-fetches for the new Environment and never carries the previous one's status over", async () => {
@@ -180,14 +159,7 @@ describe("useAuthentication — per-Environment isolation", () => {
 
     const { result, rerender } = renderHook(
       ({ envId }) =>
-        useAuthentication(
-          "p1",
-          "a1",
-          envId,
-          "token-1",
-          onSessionExpired,
-          onAccessDenied,
-        ),
+        useAuthentication("p1", envId, "token-1", onSessionExpired, onAccessDenied),
       {
         initialProps: { envId: "e1" as string | null },
       },
@@ -204,7 +176,7 @@ describe("useAuthentication — per-Environment isolation", () => {
     expect(result.current.config?.credentialStatus).toBe("NOT_CONFIGURED")
 
     expect(String(fetchMock.mock.calls[1][0])).toContain(
-      "/environment-configs/e2/authentication",
+      "/environments/e2/authentication",
     )
   })
 })
@@ -230,14 +202,7 @@ describe("useAuthentication — mutations", () => {
     vi.stubGlobal("fetch", fetchMock)
 
     const { result } = renderHook(() =>
-      useAuthentication(
-        "p1",
-        "a1",
-        "e1",
-        "token-1",
-        onSessionExpired,
-        onAccessDenied,
-      ),
+      useAuthentication("p1", "e1", "token-1", onSessionExpired, onAccessDenied),
     )
 
     await waitFor(() => expect(result.current.loading).toBe(false))
@@ -248,9 +213,7 @@ describe("useAuthentication — mutations", () => {
 
     const [url, init] = fetchMock.mock.calls[1]
 
-    expect(String(url)).toContain(
-      "/projects/p1/apis/a1/environment-configs/e1/authentication",
-    )
+    expect(String(url)).toContain("/projects/p1/environments/e1/authentication")
 
     expect((init as RequestInit).method).toBe("PUT")
 
@@ -284,14 +247,7 @@ describe("useAuthentication — mutations", () => {
     vi.stubGlobal("fetch", fetchMock)
 
     const { result } = renderHook(() =>
-      useAuthentication(
-        "p1",
-        "a1",
-        "e1",
-        "token-1",
-        onSessionExpired,
-        onAccessDenied,
-      ),
+      useAuthentication("p1", "e1", "token-1", onSessionExpired, onAccessDenied),
     )
 
     await waitFor(() => expect(result.current.loading).toBe(false))
@@ -336,14 +292,7 @@ describe("useAuthentication — mutations", () => {
     vi.stubGlobal("fetch", fetchMock)
 
     const { result } = renderHook(() =>
-      useAuthentication(
-        "p1",
-        "a1",
-        "e1",
-        "token-1",
-        onSessionExpired,
-        onAccessDenied,
-      ),
+      useAuthentication("p1", "e1", "token-1", onSessionExpired, onAccessDenied),
     )
 
     await waitFor(() => expect(result.current.loading).toBe(false))
@@ -379,14 +328,7 @@ describe("useAuthentication — mutations", () => {
     vi.stubGlobal("fetch", fetchMock)
 
     const { result } = renderHook(() =>
-      useAuthentication(
-        "p1",
-        "a1",
-        "e1",
-        "token-1",
-        onSessionExpired,
-        onAccessDenied,
-      ),
+      useAuthentication("p1", "e1", "token-1", onSessionExpired, onAccessDenied),
     )
 
     await waitFor(() => expect(result.current.loading).toBe(false))

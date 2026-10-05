@@ -14,6 +14,7 @@ import {
   ComparisonFindingsResult,
   ComparisonPagedResult,
   ComparisonQueryService,
+  ReevaluateComparisonResultDto,
   RetryComparisonResultDto,
 } from "./comparison-query.service";
 import { CreateClassificationEventDto } from "./dto/create-classification-event.dto";
@@ -87,6 +88,28 @@ export class ComparisonsController {
   })
   async retry(@Param("comparisonId", ParseUUIDPipe) comparisonId: string, @CurrentUser() actorUserId: string): Promise<RetryComparisonResultDto> {
     return this.comparisonQueryService.retryComparison(comparisonId, actorUserId);
+  }
+
+  @Post(":comparisonId/reevaluate")
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({
+    operationId: "reevaluateComparison",
+    summary: "Re-evaluate a COMPLETED Comparison's existing Snapshots against the currently active Ignore Rules, without calling the API-under-test again",
+  })
+  @ApiResponse({
+    status: 201,
+    description: "New REEVALUATION attempt created and already terminal — the response reflects its final result",
+    schema: { example: { comparisonAttemptId: "f01c...", attemptNumber: 2, processingStatus: "COMPLETED", result: "SAME" } },
+  })
+  @ApiResponse({ status: 401, description: "SESSION_INVALID / SESSION_EXPIRED / SESSION_REVOKED" })
+  @ApiResponse({ status: 404, description: "NOT_FOUND" })
+  @ApiResponse({
+    status: 409,
+    description: "LATEST_ATTEMPT_NOT_COMPLETED / CONCURRENT_REEVALUATION",
+    schema: { example: { errorCode: "LATEST_ATTEMPT_NOT_COMPLETED", message: "Re-evaluate requires the latest attempt to already be COMPLETED", requestId: "..." } },
+  })
+  async reevaluate(@Param("comparisonId", ParseUUIDPipe) comparisonId: string, @CurrentUser() actorUserId: string): Promise<ReevaluateComparisonResultDto> {
+    return this.comparisonQueryService.reevaluateComparison(comparisonId, actorUserId);
   }
 
   @Post(":comparisonId/classification-events")

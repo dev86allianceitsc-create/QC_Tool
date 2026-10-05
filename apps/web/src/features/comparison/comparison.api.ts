@@ -18,6 +18,7 @@ import type {
   CreateComparisonRequest,
   CreateComparisonResponse,
   CreateClassificationEventRequest,
+  ReevaluateComparisonResultDto,
   RetryComparisonResultDto,
 } from "./comparison.types"
 
@@ -105,6 +106,19 @@ export function retryComparison(
 ): Promise<RetryComparisonResultDto> {
   return apiClient.post<RetryComparisonResultDto>(
     `/comparisons/${comparisonId}/retry`,
+    undefined,
+    accessToken,
+  )
+}
+
+// Re-evaluate — recomputes the Comparison's existing Snapshots against the
+// currently active Ignore Rules without calling the API-under-test again.
+export function reevaluateComparison(
+  comparisonId: string,
+  accessToken: string,
+): Promise<ReevaluateComparisonResultDto> {
+  return apiClient.post<ReevaluateComparisonResultDto>(
+    `/comparisons/${comparisonId}/reevaluate`,
     undefined,
     accessToken,
   )

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 
 import { ApiError } from "../../services/api-client"
 
@@ -20,6 +20,8 @@ import { createRun } from "./run.api"
 
 import { MAX_BATCH_EXECUTIONS } from "./run.constants"
 
+import { loadRunRequestValuesDraft } from "./runRequestValuesDraft.util"
+
 import type { RunRequestValues } from "./requestInput.types"
 
 import { RunRequestPreviewPanel } from "./RunRequestPreviewPanel"
@@ -31,6 +33,8 @@ import { RunVersionMetadataPanel } from "./RunVersionMetadataPanel"
 import { useBatchApiContext } from "./useBatchApiContext"
 
 import { useEnvironmentList } from "./useEnvironmentList"
+
+import { useTestAccounts } from "./useTestAccounts"
 
 import { Badge } from "../../components/ui/Badge"
 
@@ -186,18 +190,65 @@ export function BatchRunPreparationScreen({
 
   const handleApiError = useApiErrorHandler(onSessionExpired, onAccessDenied)
 
+  // Authentication is Environment-scoped (not per-API), so every fetched
+  // context for this batch shares the same authConfig — take the first one
+  // that resolved to know the Environment's authType.
+  const environmentAuthConfig = useMemo(() => {
+    for (const apiId of apiIds) {
+      const ctx = contextByApiId[apiId]
+
+      if (ctx?.authConfig) return ctx.authConfig
+    }
+
+    return null
+  }, [apiIds, contextByApiId])
+
+  const testAccountsRequired = environmentAuthConfig?.authType === "LOGIN_FORM"
+
+  const testAccounts = useTestAccounts(
+    projectId,
+    testAccountsRequired ? environmentId : null,
+    accessToken,
+    onSessionExpired,
+    onAccessDenied,
+  )
+
   const [activeApiId, setActiveApiId] = useState<string | null>(
     initialDraft?.activeApiId ?? apiIds[0] ?? null,
   )
+
+  const [testAccountId, setTestAccountId] = useState<string | null>(null)
+
+  useEffect(() => {
+    setTestAccountId(null)
+  }, [environmentId])
 
   const [mode, setMode] = useState<"prepare" | "review">(
     initialDraft?.mode ?? "prepare",
   )
 
+  // Seeds from each API's own Run API draft (runRequestValuesDraft.util.ts)
+  // so Request Values arrive pre-filled the same way the Single Run wizard
+  // already does (RunApiArea.tsx) — read-only here, same as Single Run on
+  // initial mount: this screen still never writes a draft back (no
+  // onSaveDraft wired into RunRequestValuesPanel below), it only consumes
+  // what was saved from a previous Single Run of that API+Environment.
   const [valuesByApiId, setValuesByApiId] =
-    useState<Record<string, RunRequestValues>>(
-      initialDraft?.valuesByApiId ?? {},
-    )
+    useState<Record<string, RunRequestValues>>(() => {
+      const seeded: Record<string, RunRequestValues> = {
+        ...initialDraft?.valuesByApiId,
+      }
+
+      for (const apiId of apiIds) {
+        if (seeded[apiId]) continue
+
+        const draft = loadRunRequestValuesDraft(apiId, environmentId)
+
+        if (draft) seeded[apiId] = draft
+      }
+
+      return seeded
+    })
 
   const [apiVersionByApiId, setApiVersionByApiId] =
     useState<Record<string, string>>(initialDraft?.apiVersionByApiId ?? {})
@@ -243,12 +294,18 @@ export function BatchRunPreparationScreen({
           ? "Allow Run is OFF for this Environment."
           : null,
 
-        ctx.config?.urlStatus !== "CONFIGURED"
+        !ctx.config?.effectiveUrl
           ? "The Full URL is not configured for this Environment."
           : null,
 
         credentialStatus === "NOT_CONFIGURED"
           ? "The credential for the selected Authentication Type is not configured."
+          : null,
+
+        testAccountsRequired &&
+        !testAccounts.loading &&
+        testAccounts.testAccounts.length === 0
+          ? "No Test Accounts are configured for this Environment's Login Form Authentication."
           : null,
       ].filter((reason): reason is string => reason !== null)
 
@@ -265,6 +322,9 @@ export function BatchRunPreparationScreen({
     projectInactive,
     environmentInactive,
     environment,
+    testAccountsRequired,
+    testAccounts.loading,
+    testAccounts.testAccounts,
   ])
 
   const readyCount = apiIds.filter(
@@ -282,11 +342,14 @@ export function BatchRunPreparationScreen({
   const environmentBlocked =
     !environment || environmentInactive || !environment.allowRun
 
+  const missingTestAccount = testAccountsRequired && !testAccountId
+
   const canExecute =
     !projectInactive &&
     !environmentBlocked &&
     !submitting &&
     !loading &&
+    !missingTestAccount &&
     !!accessToken
 
   async function handleExecute() {
@@ -304,6 +367,8 @@ export function BatchRunPreparationScreen({
           runType: "BATCH",
 
           environmentId,
+
+          testAccountId: testAccountId || undefined,
 
           executions: apiIds.map((apiId) => {
             const values = valuesFor(apiId)
@@ -409,6 +474,43 @@ export function BatchRunPreparationScreen({
         )}
       </div>
 
+      {testAccountsRequired && (
+        <div className="flex flex-wrap items-center gap-3 border-b border-border px-6 py-2.5">
+          <span className="text-xs font-semibold text-gray-900">
+            Test Account
+          </span>
+          {testAccounts.loading ? (
+            <span className="text-xs text-muted">
+              Loading Test Accounts…
+            </span>
+          ) : testAccounts.testAccounts.length === 0 ? (
+            <span className="text-xs text-warning">
+              No Test Accounts configured for this Environment yet — add one
+              from Project Settings → Environments → Authentication.
+            </span>
+          ) : (
+            <select
+              aria-label="Test Account"
+              value={testAccountId ?? ""}
+              onChange={(e) => setTestAccountId(e.target.value)}
+              className="rounded-md border border-border px-2.5 py-1.5 text-sm text-gray-900"
+            >
+              <option value="" disabled>
+                Select a Test Account…
+              </option>
+              {testAccounts.testAccounts.map((account) => (
+                <option
+                  key={account.testAccountId}
+                  value={account.testAccountId}
+                >
+                  {account.label} ({account.username})
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+      )}
+
       {loading && (
         <p className="m-0 px-6 py-4 text-sm text-muted">Loading API details…</p>
       )}
@@ -484,7 +586,7 @@ export function BatchRunPreparationScreen({
                       <div>
                         <dt className="text-muted">Full URL</dt>
                         <dd className="m-0 break-all font-mono">
-                          {activeCtx.config?.fullUrl ?? "Not configured"}
+                          {activeCtx.config?.effectiveUrl ?? "Not configured"}
                         </dd>
                       </div>
                       <div>
@@ -568,7 +670,7 @@ export function BatchRunPreparationScreen({
                   />
                   <RunRequestPreviewPanel
                     httpMethod={activeCtx.api.httpMethod}
-                    fullUrl={activeCtx.config?.fullUrl ?? null}
+                    fullUrl={activeCtx.config?.effectiveUrl ?? null}
                     values={valuesFor(activeApiId)}
                     authTypeLabel={activeEval.authTypeLabel}
                     credentialStatus={activeEval.credentialStatus}
@@ -653,7 +755,9 @@ export function BatchRunPreparationScreen({
                   ? "The Project is INACTIVE."
                   : environmentBlocked
                     ? "This Environment cannot accept a Run right now."
-                    : undefined
+                    : missingTestAccount
+                      ? "Select a Test Account before executing."
+                      : undefined
               }
             >
               {submitting ? "Executing…" : `Execute Batch (${apiIds.length})`}

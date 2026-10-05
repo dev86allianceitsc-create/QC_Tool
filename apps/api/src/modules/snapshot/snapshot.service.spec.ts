@@ -22,6 +22,8 @@ function baseInput(overrides: Partial<SnapshotCreationInput> = {}): SnapshotCrea
     authType: "NONE",
     authContextVersion: 1,
     authIdentityLabel: null,
+    testAccountId: null,
+    testCaseKey: "tck-1",
     initiatedByUserId: "u-1",
     initiatedByLabel: "user@example.com",
     httpMethod: "GET",
@@ -75,6 +77,26 @@ describe("SnapshotService", () => {
     expect(createArgs.data.runExecutionId).toBe("re-1");
     expect(createArgs.data.payload.create.responseBody).toBeInstanceOf(Uint8Array);
     expect(tx.snapshotSaveAttempt.create).toHaveBeenCalledWith({ data: { runExecutionId: "re-1", attemptStatus: "SUCCEEDED" } });
+  });
+
+  it("persists testAccountId and testCaseKey into snapshot.create exactly as received", async () => {
+    const { service, tx } = makeService();
+
+    await service.tryCreateSnapshot(baseInput({ testAccountId: "account-1", testCaseKey: "tck-abc" }));
+
+    const createArgs = tx.snapshot.create.mock.calls[0][0];
+    expect(createArgs.data.testAccountId).toBe("account-1");
+    expect(createArgs.data.testCaseKey).toBe("tck-abc");
+  });
+
+  it("persists a null testAccountId/testCaseKey unchanged when the caller provides none", async () => {
+    const { service, tx } = makeService();
+
+    await service.tryCreateSnapshot(baseInput({ testAccountId: null, testCaseKey: null }));
+
+    const createArgs = tx.snapshot.create.mock.calls[0][0];
+    expect(createArgs.data.testAccountId).toBeNull();
+    expect(createArgs.data.testCaseKey).toBeNull();
   });
 
   it("persists request/response headers into snapshot.create exactly as received, without re-deriving or re-masking them itself", async () => {

@@ -156,6 +156,7 @@ model User {
   comparisonChainsRequested      ComparisonChain[]
   comparisonsRequested           Comparison[]
   comparisonClassificationEvents ComparisonClassificationEvent[]
+  ignoreRulesCreated             IgnoreRule[]
 
   @@map("users")
 }
@@ -217,6 +218,7 @@ model Project {
 
   comparisonChains ComparisonChain[]
   comparisons      Comparison[]
+  ignoreRules      IgnoreRule[]
 
   @@index([projectStatus, deletedAt], map: "idx_projects_status_deleted")
   @@map("projects")
@@ -308,8 +310,9 @@ model ApiConfiguration {
   path        String  @db.VarChar(2048)
   description String? @db.Text
 
-  // creation_source domain: MANUAL | OPENAPI_IMPORT (REQ-FUN-002). Enforced
-  // via raw CHECK ck_api_configurations_creation_source, not modeled here.
+  // creation_source domain: MANUAL | OPENAPI_IMPORT | CURL_IMPORT
+  // (REQ-FUN-002, Phase 2 customer feedback #1). Enforced via raw CHECK
+  // ck_api_configurations_creation_source, not modeled here.
   creationSource String @map("creation_source") @db.VarChar(30)
 
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
@@ -323,11 +326,11 @@ model ApiConfiguration {
 
   parameterDefinitions RequestParameterDefinition[]
   bodyDefinition       RequestBodyDefinition?
-  authConfigs          AuthenticationConfiguration[]
   runExecutions        RunExecution[]
   snapshots            Snapshot[]
   comparisonChains     ComparisonChain[]
   comparisons          Comparison[]
+  ignoreRules          IgnoreRule[]
 
   @@index([projectId, deletedAt], map: "idx_api_configurations_project_deleted")
   @@map("api_configurations")
@@ -362,12 +365,22 @@ model Environment {
   // ck_environments_environment_status, not modeled here.
   environmentStatus String @map("environment_status") @db.VarChar(20)
 
+  // Phase 1 domain binding (customer feedback #2): optional origin-only URL
+  // (protocol + host, no path/query/fragment — validated by
+  // validateOriginOnlyUrl) used as a fallback base when a given API has no
+  // per-Environment Full URL override in api_environment_configs. Never a
+  // new persisted per-API row — resolveEffectiveUrl composes this + the
+  // API's path at read/dispatch time only. NULL = no domain bound, same
+  // "no value = not configured" convention as api_environment_configs.
+  baseUrl String? @map("base_url") @db.VarChar(2048)
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
   note      String?  @db.Text
 
   configs          ApiEnvironmentConfig[]
-  authConfigs      AuthenticationConfiguration[]
+  authConfig       AuthenticationConfiguration?
+  testAccounts     TestAccount[]
   runs             Run[]
   snapshots        Snapshot[]
   comparisonChains ComparisonChain[]
@@ -465,53 +478,77 @@ model RequestBodyDefinition {
   @@map("request_body_definitions")
 }
 
-// authentication_configurations — Group 3C (REQ-SEC-002 CONFIRMED,
-// REQ-AUTH-001/002/003). No row = auth_type NONE implicitly, same "no row =
-// Not configured" convention as api_environment_configs. Relationship
-// identity = (api_id, environment_id) — credential isolation boundary per
-// REQ-SEC-002 Section 5; never shared/copied across API or Environment.
+// authentication_configurations — Group 3C (REQ-SEC-002, REQ-AUTH-001/002/003).
+// No row = auth_type NONE implicitly, same "no row = Not configured"
+// convention as api_environment_configs. Relationship identity =
+// environment_id alone (REVISION 3C-R02): Authentication is managed once per
+// Environment, in Project Settings, and shared by every API run against that
+// Environment — this deliberately reverses the earlier per-API isolation
+// documented as REQ-SEC-002 in prior revisions, per explicit product
+// direction. Login Form's identity now comes from the separate TestAccount
+// model (0..N per Environment); this row only holds the shared, structural
+// Login Form fields plus the single Bearer Token secret.
 //
-// LOGIN_FORM non-secret config (login_url, username, username_field,
-// password_field, token_response_path) is Credential Metadata per
-// REQ-SEC-002's terminology table and may be read by Admin and User with
-// Project Access. The secret columns below are Secret Credential Value and
-// are NEVER returned in plaintext by any endpoint, to any actor — only
-// Configured/Not configured status is exposed. Exactly one secret pair is
-// populated at a time, matching the currently selected auth_type; switching
-// auth_type (CL-3C-02, REQ-AUTH-003) clears the previous type's secret in
-// the same mutation.
+// LOGIN_FORM non-secret config (login_url, username_field, password_field)
+// is Credential Metadata per REQ-SEC-002's terminology table and may be read
+// by Admin and User with Project Access. The secret
+// columns below are Secret Credential Value and are NEVER returned in
+// plaintext by any endpoint, to any actor — only Configured/Not configured
+// status is exposed. auth_type/login_mode only select which shape is
+// currently active — switching between them preserves every inactive
+// shape's fields (and, for LOGIN_FORM, its Test Accounts) so they reappear
+// if the admin switches back. Configuration is only removed via an
+// explicit delete/reset action by the admin.
 model AuthenticationConfiguration {
-  apiId         String           @map("api_id") @db.Uuid
-  api           ApiConfiguration @relation(fields: [apiId], references: [apiId], onDelete: Restrict)
-  environmentId String           @map("environment_id") @db.Uuid
-  environment   Environment      @relation(fields: [environmentId], references: [environmentId], onDelete: Restrict)
+  environmentId String      @id @map("environment_id") @db.Uuid
+  environment   Environment @relation(fields: [environmentId], references: [environmentId], onDelete: Restrict)
 
   // auth_type domain: NONE | LOGIN_FORM | BEARER_TOKEN. Enforced via raw
   // CHECK ck_authentication_configurations_auth_type, not modeled here.
   authType String @map("auth_type") @db.VarChar(20)
 
-  // Stable identity/access-scope version for this API+Environment's
+  // Stable identity/access-scope version for this Environment's
   // Authentication Configuration (REQ-SNP-003/006/008, Group 5 Q5 answer).
   // Incremented when identity or access materially changes (auth_type
-  // change, LOGIN_FORM username change, credential removal, or a
-  // BEARER_TOKEN replacement not explicitly confirmed as the same
-  // identity/access); NOT incremented for a same-identity credential
-  // rotation. Frozen onto each Snapshot at creation time as part of
+  // change, credential removal, or a BEARER_TOKEN replacement not explicitly
+  // confirmed as the same identity/access); NOT incremented for a
+  // same-identity credential rotation, nor for adding/editing/removing a
+  // LOGIN_FORM Test Account — Test Accounts are deliberately interchangeable
+  // within the same context so Runs using different accounts stay
+  // comparable. Frozen onto each Snapshot at creation time as part of
   // auth_context_key — never rewritten retroactively on past Snapshots.
   contextVersion Int @default(1) @map("context_version")
 
-  // LOGIN_FORM config — non-secret, null unless auth_type = LOGIN_FORM.
-  loginUrl          String? @map("login_url") @db.VarChar(2048)
-  username          String? @db.VarChar(255)
-  usernameField     String? @map("username_field") @db.VarChar(100)
-  passwordField     String? @map("password_field") @db.VarChar(100)
-  tokenResponsePath String? @map("token_response_path") @db.VarChar(200)
+  // LOGIN_FORM config — shared structural fields, non-secret, null unless
+  // auth_type = LOGIN_FORM. Per-account identity (username/password) lives on
+  // TestAccount instead. login_mode selects which of the two shapes below is
+  // active; the inactive shape's columns are always null (never both
+  // populated at once).
+  //
+  // MANUAL — the original 3-field shape: fixed POST + JSON body with exactly
+  // these two keys.
+  loginUrl      String? @map("login_url") @db.VarChar(2048)
+  usernameField String? @map("username_field") @db.VarChar(100)
+  passwordField String? @map("password_field") @db.VarChar(100)
 
-  // Secret, encrypted at rest (AES-256-GCM, app-level CREDENTIAL_ENCRYPTION_KEY).
-  // Populated only when auth_type = LOGIN_FORM and a password has been set.
-  passwordCiphertext Bytes? @map("password_ciphertext")
-  passwordIv         Bytes? @map("password_iv")
-  passwordAuthTag    Bytes? @map("password_auth_tag")
+  // login_mode domain: MANUAL | IMPORTED. Enforced via raw CHECK
+  // ck_authentication_configurations_login_mode, not modeled here.
+  loginMode String? @map("login_mode") @db.VarChar(10)
+
+  // IMPORTED — an arbitrary login request captured via "Import from
+  // cURL/fetch" (recommended flow): any method/headers/body shape, with
+  // import_username_location/import_password_location marking which header
+  // or top-level body field gets overwritten with the selected Test
+  // Account's real values at Run time. import_body_format domain: JSON |
+  // FORM_URLENCODED | NONE, enforced via raw CHECK
+  // ck_authentication_configurations_import_body_format, not modeled here.
+  importMethod           String? @map("import_method") @db.VarChar(10)
+  importUrl              String? @map("import_url") @db.VarChar(2048)
+  importHeaders          Json?   @map("import_headers")
+  importBodyFormat       String? @map("import_body_format") @db.VarChar(20)
+  importBodyFields       Json?   @map("import_body_fields")
+  importUsernameLocation Json?   @map("import_username_location")
+  importPasswordLocation Json?   @map("import_password_location")
 
   // Secret, encrypted at rest. Populated only when auth_type = BEARER_TOKEN
   // and a token has been set.
@@ -523,9 +560,37 @@ model AuthenticationConfiguration {
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
   note      String?  @db.Text
 
-  @@id([apiId, environmentId], map: "pk_authentication_configurations")
-  @@index([environmentId], map: "idx_authentication_configurations_environment_id")
   @@map("authentication_configurations")
+}
+
+// test_accounts — REVISION 3C-R02. Named Login Form credentials saved per
+// Environment (0..N), selected by the user at Run time. Only meaningful
+// while the owning Environment's AuthenticationConfiguration.auth_type is
+// LOGIN_FORM; the application, not a DB CHECK, enforces that. label is the
+// user-facing name shown in the Run/Compare UI; unique per Environment so
+// two accounts in the same Environment are never ambiguous. The password
+// pair uses the same AES-256-GCM at-rest scheme as the Bearer Token secret
+// above.
+model TestAccount {
+  testAccountId String      @id @default(uuid()) @map("test_account_id") @db.Uuid
+  environmentId String      @map("environment_id") @db.Uuid
+  environment   Environment @relation(fields: [environmentId], references: [environmentId], onDelete: Restrict)
+
+  label    String @db.VarChar(100)
+  username String @db.VarChar(255)
+
+  passwordCiphertext Bytes @map("password_ciphertext")
+  passwordIv         Bytes @map("password_iv")
+  passwordAuthTag    Bytes @map("password_auth_tag")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  runs      Run[]
+  snapshots Snapshot[]
+
+  @@unique([environmentId, label], map: "ux_test_accounts_environment_id_label")
+  @@map("test_accounts")
 }
 
 // runs — Group Run, document/database/AnD_Database_Group_Run Section 17
@@ -541,6 +606,13 @@ model Run {
 
   environmentId String      @map("environment_id") @db.Uuid
   environment   Environment @relation(fields: [environmentId], references: [environmentId], onDelete: Restrict)
+
+  // Login Form Test Account selected for this Run (REVISION 3C-R02). Null
+  // whenever the Environment's auth_type is not LOGIN_FORM. Kept for
+  // history/audit display only — SetNull on delete so removing a Test
+  // Account never blocks or rewrites a past Run's other data.
+  testAccountId String?      @map("test_account_id") @db.Uuid
+  testAccount   TestAccount? @relation(fields: [testAccountId], references: [testAccountId], onDelete: SetNull)
 
   createdBy String @map("created_by") @db.Uuid
   creator   User   @relation(fields: [createdBy], references: [userId], onDelete: Restrict)
@@ -679,6 +751,33 @@ model RunExecution {
   baselineSelectedAt               DateTime? @map("baseline_selected_at") @db.Timestamptz
   comparisonAvailabilityReasonCode String?   @map("comparison_availability_reason_code") @db.VarChar(32)
 
+  // Phase 3 Test Case History & Run Again. request_input_snapshot is the
+  // literal raw submitted Request Input (CreateRunDto's RequestValuesDto
+  // shape: pathValues/queryValues/headerValues/bodyValue), frozen once at
+  // Run creation time regardless of eventual dispatch outcome - this is the
+  // piece that doesn't exist anywhere else (the trace columns above are
+  // already-resolved and lossy), and is what makes "Run Again" possible
+  // without reconstructing input. auth_type/test_case_key are frozen at
+  // dispatch time instead (same point request_trace is built), null for
+  // executions that never reached dispatch. test_case_key is the computed
+  // SHA-256 fingerprint (computeTestCaseKey: apiId+environmentId+authType+
+  // testAccountId+normalized raw input) used to group/chain Executions of
+  // the same logical test case - deliberately excludes auth_context_key/
+  // auth_context_version, so an auth-config edit or secret rotation never
+  // forks a Test Case's history (see Snapshot.testCaseKey doc comment).
+  requestInputSnapshot Json?   @map("request_input_snapshot") @db.JsonB
+  authType             String? @map("auth_type") @db.VarChar(20)
+  testCaseKey          String? @map("test_case_key") @db.VarChar(64)
+
+  // Advanced "Re-run this execution" lineage/audit only - set solely by
+  // that explicit action, never by ordinary Run Again (whose chaining is
+  // derived purely from test_case_key, no lineage column involved).
+  // SetNull on delete so removing the source execution never blocks or
+  // rewrites a later re-run's own history.
+  rerunOfExecutionId String?        @map("rerun_of_execution_id") @db.Uuid
+  rerunOfExecution   RunExecution?  @relation("RunExecutionRerun", fields: [rerunOfExecutionId], references: [runExecutionId], onDelete: SetNull)
+  rerunExecutions    RunExecution[] @relation("RunExecutionRerun")
+
   snapshot            Snapshot?             @relation("RunExecutionTargetSnapshot")
   saveAttempts        SnapshotSaveAttempt[]
   comparisonsAsSource Comparison[]
@@ -687,6 +786,7 @@ model RunExecution {
   @@unique([runId, executionOrder], map: "uq_run_executions_run_id_execution_order")
   @@index([apiId, createdAt(sort: Desc)], map: "idx_run_executions_api_id_created_at")
   @@index([baselineSnapshotId], map: "idx_run_executions_baseline_snapshot_id")
+  @@index([testCaseKey, requestSentAt(sort: Desc)], map: "idx_run_executions_test_case_key_sent_at")
   @@map("run_executions")
 }
 
@@ -702,10 +802,13 @@ model RunExecution {
 // a Snapshot at all is strictly HTTP 2xx (SNP-001/004/006) — narrower than
 // run_executions.execution_outcome's RESPONSE_RECEIVED bucket, which also
 // includes 3xx. "First vs. subsequent" is derived at query time (ORDER BY
-// completed_at, snapshot_id within the same
-// api_id+environment_id+auth_context_key scope, idx_snapshots_scope_completed_at)
-// rather than stored as a flag, so the meaning never needs retroactive
-// correction if history is reinterpreted.
+// completed_at, snapshot_id within the same test_case_key scope,
+// idx_snapshots_test_case_key_completed_at — Phase 3 Test Case History;
+// previously scoped by api_id+environment_id+auth_context_key, replaced so
+// baseline selection stays independent of auth-context fingerprinting, see
+// test_case_key's own doc comment below) rather than stored as a flag, so
+// the meaning never needs retroactive correction if history is
+// reinterpreted.
 model Snapshot {
   snapshotId String @id @default(uuid()) @map("snapshot_id") @db.Uuid
 
@@ -748,6 +851,21 @@ model Snapshot {
   authIdentityLabel  String? @map("auth_identity_label") @db.VarChar(255)
   authContextKey     String  @map("auth_context_key") @db.VarChar(64)
 
+  // Phase 3 Test Case History. test_account_id is captured at Snapshot
+  // creation time from the same DispatchRunContext.testAccountId used to
+  // freeze run_executions.test_case_key - needed by the Comparison
+  // eligibility Test-Account check (RS-CMP revert), independent of
+  // test_case_key below. SetNull on delete so removing a Test Account never
+  // blocks or rewrites a past Snapshot. test_case_key is the same computed
+  // fingerprint as run_executions.test_case_key, frozen the same way;
+  // auth_context_key above is unchanged and continues to serve eligibility/
+  // safety exactly as today - the two columns now serve clearly separate
+  // purposes (test_case_key -> identity/grouping, auth_context_key ->
+  // safety).
+  testAccountId String?      @map("test_account_id") @db.Uuid
+  testAccount   TestAccount? @relation(fields: [testAccountId], references: [testAccountId], onDelete: SetNull)
+  testCaseKey   String?      @map("test_case_key") @db.VarChar(64)
+
   initiatedByUserId String @map("initiated_by_user_id") @db.Uuid
   initiatedBy       User   @relation(fields: [initiatedByUserId], references: [userId], onDelete: Restrict)
   initiatedByLabel  String @map("initiated_by_label") @db.VarChar(320)
@@ -758,11 +876,15 @@ model Snapshot {
   httpMethod           String  @map("http_method") @db.VarChar(10)
   requestUrl           String  @map("request_url") @db.VarChar(4096)
   requestContentType   String? @map("request_content_type") @db.VarChar(255)
-  // Request headers actually sent for this Execution (REQ-SNP-003 §C),
-  // added by a later migration than the rest of this table. Same shape and
-  // redaction convention as run_executions.request_headers_safe — the
-  // Authorization value is masked, every other header is stored as typed by
-  // the user. Null for any Snapshot created before this column existed.
+  // Request headers actually sent for this Execution (REQ-SNP-003 §C), added
+  // by a later migration than the rest of this table. Unlike
+  // run_executions.request_headers_safe, this column is intentionally
+  // unmasked — it stores every header exactly as sent, Authorization
+  // included — because Comparison's INPUT gate (comparison-input-gate.util.ts)
+  // reads the real value to detect drift; that gate now excludes Authorization
+  // from its diff by policy (REVISION 3C-R02, so different Test Accounts can
+  // still be compared), not by redacting the stored value. Null for any
+  // Snapshot created before this column existed.
   requestHeaders       Json?   @map("request_headers") @db.JsonB
   requestBodySizeBytes Int?    @map("request_body_size_bytes")
 
@@ -817,7 +939,7 @@ model Snapshot {
   comparisonsAsBaseline Comparison[]   @relation("ComparisonBaselineSnapshot")
   comparisonsAsTarget   Comparison[]   @relation("ComparisonTargetSnapshot")
 
-  @@index([apiId, environmentId, authContextKey, completedAt], map: "idx_snapshots_scope_completed_at")
+  @@index([testCaseKey, completedAt(sort: Desc)], map: "idx_snapshots_test_case_key_completed_at")
   @@index([runId], map: "idx_snapshots_run_id")
   @@index([projectId, createdAt(sort: Desc)], map: "idx_snapshots_project_created_at")
   @@map("snapshots")
@@ -956,8 +1078,14 @@ model Comparison {
   targetSnapshot   Snapshot @relation("ComparisonTargetSnapshot", fields: [targetSnapshotId], references: [snapshotId], onDelete: Restrict)
 
   // source_kind domain: AUTO_EXECUTION | MANUAL_PAIR | BASELINE_LATEST |
-  // CHAIN_PAIR. BASELINE_LATEST is a manual subtype, never merged with
-  // automatic. Enforced via raw CHECK ck_comparisons_source_kind.
+  // CHAIN_PAIR | RERUN_EXECUTION. BASELINE_LATEST is a manual subtype,
+  // never merged with automatic. RERUN_EXECUTION (Phase 3 Test Case
+  // History) is the advanced "Re-run this execution" action's own kind -
+  // same automatic/system-originated treatment as AUTO_EXECUTION (no user
+  // actor, forced baseline instead of auto-selected) but kept distinct so
+  // the INPUT gate's anomaly reason (CONFIG_DRIFT_DETECTED) and future
+  // reporting can tell a forced re-run apart from an ordinary chained Run
+  // Again. Enforced via raw CHECK ck_comparisons_source_kind.
   sourceKind String @map("source_kind") @db.VarChar(32)
 
   sourceExecutionId String?       @unique(map: "uq_comparisons_source_execution_id") @map("source_execution_id") @db.Uuid
@@ -997,8 +1125,12 @@ model Comparison {
 // index (uq_comparison_attempts_completed_per_comparison, migration-only -
 // Prisma cannot express a partial index declaratively, same convention as
 // ApiConfiguration's active-uniqueness index) guarantees at most one
-// COMPLETED attempt per Comparison at the DB layer; retries never update a
-// terminal attempt. applied_rule_manifest is an immutable snapshot of the
+// COMPLETED attempt per Comparison from a real run (trigger_kind <>
+// REEVALUATION) at the DB layer; retries never update a terminal attempt.
+// A Re-evaluation (trigger_kind = REEVALUATION) may add further COMPLETED
+// attempts on top of that one, each a fresh recomputation of the same
+// stored Snapshots under whatever Ignore Rules are active at the time,
+// without ever rewriting the original. applied_rule_manifest is an immutable snapshot of the
 // rule/version/policy/exclusion/representation boundary used by this
 // attempt (CMP-006/007/008/016/017/018) - no policy/version master table
 // exists yet in the repo (DB-VERIFY-03), so the application writes a
@@ -1025,9 +1157,17 @@ model ComparisonAttempt {
   // stopping gate) - CONTEXT_MISMATCH/ENVIRONMENT_MISMATCH/
   // AUTH_CONTEXT_UNKNOWN/SNAPSHOT_INVALIDATED/SNAPSHOT_INCOMPLETE/
   // INPUT_MISMATCH/UNSUPPORTED_FORMAT/UNSUPPORTED_ENCODING/
-  // PAYLOAD_UNAVAILABLE/ENGINE_ERROR/PERSISTENCE_ERROR. Enforced via raw
-  // CHECK ck_comparison_attempts_reason_code. NO_BASELINE/NO_NEW_SNAPSHOT
-  // are Execution availability values, never valid here.
+  // PAYLOAD_UNAVAILABLE/ENGINE_ERROR/PERSISTENCE_ERROR/
+  // TEST_ACCOUNT_MISMATCH/CONFIG_DRIFT_DETECTED (last two added by Phase 3
+  // Test Case History: TEST_ACCOUNT_MISMATCH is ELIGIBILITY-stage, same
+  // family as CONTEXT_MISMATCH, for a Login Form pair whose Test Accounts
+  // differ; CONFIG_DRIFT_DETECTED is the INPUT-stage reason used in place
+  // of INPUT_MISMATCH specifically for AUTO_EXECUTION/RERUN_EXECUTION pairs
+  // - those already share a test_case_key by construction, so a real INPUT
+  // gate mismatch there means the resolved request drifted despite
+  // identical raw input, not "different test case"). Enforced via raw CHECK
+  // ck_comparison_attempts_reason_code. NO_BASELINE/NO_NEW_SNAPSHOT are
+  // Execution availability values, never valid here.
   reasonCode       String? @map("reason_code") @db.VarChar(40)
   reasonDetailSafe String? @map("reason_detail_safe") @db.Text
 
@@ -1041,6 +1181,17 @@ model ComparisonAttempt {
   comparisonResult String? @map("comparison_result") @db.VarChar(20)
 
   appliedRuleManifest Json? @map("applied_rule_manifest") @db.JsonB
+
+  // trigger_kind domain: INITIAL | RETRY | REEVALUATION — which action
+  // created this attempt. INITIAL is the Comparison's first attempt;
+  // RETRY re-runs a terminal non-COMPLETED attempt; REEVALUATION recomputes
+  // a COMPLETED attempt's gates against the same stored Snapshots under
+  // whatever Ignore Rules are active now, without touching the original
+  // attempt. Enforced via raw CHECK ck_comparison_attempts_trigger_kind.
+  // uq_comparison_attempts_completed_per_comparison only allows one
+  // COMPLETED attempt whose trigger_kind is NOT REEVALUATION — any number of
+  // COMPLETED REEVALUATION attempts may accumulate alongside it.
+  triggerKind String @map("trigger_kind") @db.VarChar(20)
 
   startedAt DateTime? @map("started_at") @db.Timestamptz
   endedAt   DateTime? @map("ended_at") @db.Timestamptz
@@ -1148,4 +1299,71 @@ model ComparisonClassificationEvent {
 
   @@unique([comparisonId, revision], map: "uq_comparison_classification_events_comparison_id_revision")
   @@map("comparison_classification_events")
+}
+
+// ignore_rules — Output Ignore Rules. Affects Comparison OUTPUT-gate
+// body-diff findings only (RESPONSE_BODY findings that carry a non-null
+// location_path, per comparison-output-gate.util.ts/body-diff.util.ts) —
+// never Test Case identity/test_case_key, request input, baseline
+// selection, Environment, authentication, or Test Account, which remain
+// governed entirely by run dispatch (run-execution.engine.ts) and are
+// untouched by this model. Raw Snapshots and already-COMPLETED
+// ComparisonAttempt/ComparisonFinding rows are never rewritten when a rule
+// is added/enabled/disabled/deleted — only attempts processed afterward
+// read the then-current enabled rule set (ComparisonEngineService's OUTPUT
+// stage).
+//
+// scope domain: API | PROJECT. Enforced via raw CHECK ck_ignore_rules_scope
+// and ck_ignore_rules_scope_api_id (scope='API' <=> api_id NOT NULL).
+//   - API: applies only to api_id.
+//   - PROJECT: applies to every API in project_id (api_id NULL).
+//
+// path is the same display-only JSONPath-flavored string body-diff.util.ts
+// already produces as comparison_findings.location_path ($.Field,
+// $.Data.Nested, $.Data[*].updatedAt for a single-level array wildcard) —
+// matched via a narrow regex compiler, deliberately not a general JSONPath
+// engine (explicit scope instruction).
+//
+// Duplicate prevention: uq_ignore_rules_api_id_path below covers API-scope
+// (exploits PostgreSQL NULL-distinct unique-index semantics — rows with
+// api_id NULL, i.e. PROJECT-scope rows, are never duplicates of each other
+// under this index). PROJECT-scope dedup needs a separate partial unique
+// index (ux_ignore_rules_project_scope_path, WHERE scope = 'PROJECT') —
+// cannot be expressed declaratively in Prisma, added via raw SQL in the
+// migration, same convention as ux_api_configurations_active.
+model IgnoreRule {
+  ignoreRuleId String @id @default(uuid()) @map("ignore_rule_id") @db.Uuid
+
+  projectId String  @map("project_id") @db.Uuid
+  project   Project @relation(fields: [projectId], references: [projectId], onDelete: Restrict)
+
+  // NULL for PROJECT-scope rules. RESTRICT (not Cascade/SetNull) — "FK
+  // delete behavior is RESTRICT throughout" is the repo's dominant
+  // convention for Comparison-adjacent tables; api_configurations rows are
+  // soft-deleted in normal operation (deleted_at), so this rarely blocks
+  // anything in practice.
+  apiId String?           @map("api_id") @db.Uuid
+  api   ApiConfiguration? @relation(fields: [apiId], references: [apiId], onDelete: Restrict)
+
+  // scope domain: API | PROJECT. Enforced via raw CHECK ck_ignore_rules_scope.
+  scope String @db.VarChar(20)
+
+  path String @db.VarChar(500)
+
+  // No DB default — "Initial: true" is an Initial Business Value set
+  // explicitly by application code on create, same convention as
+  // environments.allow_run / projects.project_status.
+  enabled Boolean @map("enabled")
+
+  createdByUserId String? @map("created_by") @db.Uuid
+  createdBy       User?   @relation(fields: [createdByUserId], references: [userId], onDelete: SetNull, map: "fk_ignore_rules_created_by")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+  note      String?  @db.Text
+
+  @@unique([apiId, path], map: "uq_ignore_rules_api_id_path")
+  @@index([projectId, scope, enabled], map: "idx_ignore_rules_project_scope_enabled")
+  @@index([apiId, enabled], map: "idx_ignore_rules_api_id_enabled")
+  @@map("ignore_rules")
 }

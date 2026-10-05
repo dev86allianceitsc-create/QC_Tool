@@ -10,6 +10,7 @@ import type {
   RunDetail,
   RunExecutionDetail,
   RunListItem,
+  TestCaseListItem,
 } from "./run.types"
 
 // API-RUN-001
@@ -100,6 +101,10 @@ export interface ListApiRunExecutionsParams {
 
   environmentId?: string
 
+  // Phase 3 Test Case History & Run Again (§8 drill-down) — scopes this
+  // API's execution history down to one Test Case's chain.
+  testCaseKey?: string
+
   sortBy?: string
 
   sortOrder?: string
@@ -118,6 +123,67 @@ export function listApiRunExecutions(
 ): Promise<PagedResult<ApiRunExecutionListItem>> {
   return apiClient.get<PagedResult<ApiRunExecutionListItem>>(
     `/projects/${projectId}/apis/${apiId}/run-executions${buildQueryString(params)}`,
+
+    accessToken,
+  )
+}
+
+// Phase 3 Test Case History & Run Again (§7/§8) — one card per distinct Test
+// Case (testCaseKey) for this API, most recently run first.
+
+export function listTestCases(
+  projectId: string,
+
+  apiId: string,
+
+  accessToken: string,
+): Promise<TestCaseListItem[]> {
+  return apiClient.get<TestCaseListItem[]>(
+    `/projects/${projectId}/apis/${apiId}/test-cases`,
+
+    accessToken,
+  )
+}
+
+// Phase 3 Test Case History & Run Again (§4) — normal workflow: re-submits
+// the given execution's saved Request Input as a fresh Run, auto-chaining
+// against the most recent previous execution of the same Test Case.
+
+export function runAgain(
+  projectId: string,
+
+  apiId: string,
+
+  executionId: string,
+
+  accessToken: string,
+): Promise<RunDetail> {
+  return apiClient.post<RunDetail>(
+    `/projects/${projectId}/apis/${apiId}/run-executions/${executionId}/run-again`,
+
+    undefined,
+
+    accessToken,
+  )
+}
+
+// Phase 3 Test Case History & Run Again (§5) — advanced workflow: re-runs
+// this specific historical execution, forcing the comparison baseline back
+// to it rather than auto-chaining to the latest.
+
+export function rerunExecution(
+  projectId: string,
+
+  apiId: string,
+
+  executionId: string,
+
+  accessToken: string,
+): Promise<RunDetail> {
+  return apiClient.post<RunDetail>(
+    `/projects/${projectId}/apis/${apiId}/run-executions/${executionId}/rerun`,
+
+    undefined,
 
     accessToken,
   )

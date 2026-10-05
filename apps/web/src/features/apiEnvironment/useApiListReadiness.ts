@@ -73,7 +73,7 @@ export function useApiListReadiness(
             const configurationStatus: ApiConfigurationStatus =
               environmentAllowRun === false
                 ? "ALLOW_RUN_OFF"
-                : !config || config.urlStatus !== "CONFIGURED"
+                : !config || !config.effectiveUrl
                   ? "MISSING_URL"
                   : config.credentialStatus === "NOT_CONFIGURED"
                     ? "MISSING_CREDENTIAL"

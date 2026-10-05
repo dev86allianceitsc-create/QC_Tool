@@ -30,7 +30,7 @@ export function evaluateEligibility(
 
   values: RunRequestValues,
 ): SkipReasonCode | null {
-  if (!config || config.urlStatus !== "CONFIGURED") {
+  if (!config || !config.effectiveUrl) {
     return "MISSING_FULL_URL"
   }
 

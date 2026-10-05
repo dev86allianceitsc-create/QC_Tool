@@ -16,7 +16,7 @@ import { Input, Textarea } from "../../components/ui/Input"
 
 import { Modal } from "../../components/ui/Modal"
 
-import { thClass, tdClass, trHoverClass } from "../../components/ui/table"
+import { thClass, thCenterClass, tdClass, trHoverClass } from "../../components/ui/table"
 
 type CreateModalState = "default" | "loading" | "success" | "invalid" | "error"
 
@@ -146,7 +146,7 @@ export function ProjectListScreen({
                 <th className={thClass}>Name</th>
                 <th className={thClass}>Description</th>
                 <th className={thClass}>Status</th>
-                <th className={`${thClass} text-center`}>Action</th>
+                <th className={thCenterClass}>Action</th>
               </tr>
             </thead>
             <tbody>

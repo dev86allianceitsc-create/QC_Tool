@@ -11,6 +11,7 @@ import {
   getProcessingStatusDisplay,
   getResultDisplay,
   getSourceKindLabel,
+  getTriggerKindLabel,
   getVersionChangedDisplay,
   isFindingTypeMismatch,
 } from "./comparison-format.util"
@@ -93,10 +94,10 @@ describe("getProcessingStatusDisplay", () => {
 })
 
 describe("getResultDisplay", () => {
-  it("renders SAME/success once COMPLETED", () => {
+  it("renders SAME/warning once COMPLETED", () => {
     expect(getResultDisplay("COMPLETED", "SAME")).toEqual({
       label: "SAME",
-      tone: "success",
+      tone: "warning",
     })
   })
 
@@ -252,6 +253,20 @@ describe("getInputCheckOutcomeLabel", () => {
 
   it("renders MISMATCH as Mismatch", () => {
     expect(getInputCheckOutcomeLabel("MISMATCH")).toBe("Mismatch")
+  })
+})
+
+describe("getTriggerKindLabel", () => {
+  it("labels INITIAL as Initial run", () => {
+    expect(getTriggerKindLabel("INITIAL")).toBe("Initial run")
+  })
+
+  it("labels RETRY as Retry", () => {
+    expect(getTriggerKindLabel("RETRY")).toBe("Retry")
+  })
+
+  it("labels REEVALUATION as Re-evaluated", () => {
+    expect(getTriggerKindLabel("REEVALUATION")).toBe("Re-evaluated")
   })
 })
 

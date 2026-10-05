@@ -1,3 +1,5 @@
+import type { AuthType } from "./authentication.types"
+
 import type { RunRequestValues } from "./requestInput.types"
 
 import type { UseSingleRunExecutionResult } from "./useSingleRunExecution"
@@ -33,9 +35,17 @@ export function RunExecutePanel({
 
   dbVersion,
 
+  authType,
+
+  testAccountId,
+
   runBlockers,
 
   runExecution,
+
+  onViewSnapshot,
+
+  onViewComparison,
 }: {
   httpMethod: string
 
@@ -47,9 +57,17 @@ export function RunExecutePanel({
 
   dbVersion: string
 
+  authType: AuthType | null
+
+  testAccountId: string | null
+
   runBlockers: string[]
 
   runExecution: UseSingleRunExecutionResult
+
+  onViewSnapshot?: (snapshotId: string) => void
+
+  onViewComparison?: (comparisonId: string) => void
 }) {
   const { run, executionDetail, executing, timedOut, error, execute, reset } =
     runExecution
@@ -64,8 +82,16 @@ export function RunExecutePanel({
     validateVersion(apiVersion, "API Version") ??
     validateVersion(dbVersion, "Database Version")
 
+  const testAccountRequired = authType === "LOGIN_FORM"
+
+  const missingTestAccount = testAccountRequired && !testAccountId
+
   const canExecute =
-    runBlockers.length === 0 && !!previewUrl && !versionError && !executing
+    runBlockers.length === 0 &&
+    !!previewUrl &&
+    !versionError &&
+    !missingTestAccount &&
+    !executing
 
   const execution = run?.executions[0] ?? null
 
@@ -89,17 +115,27 @@ export function RunExecutePanel({
           <Button
             variant="primary"
             disabled={!canExecute}
-            onClick={() => void execute(values, apiVersion, dbVersion)}
+            onClick={() =>
+              void execute(values, apiVersion, dbVersion, testAccountId ?? undefined)
+            }
             title={
               runBlockers.length > 0
                 ? runBlockers[0]
-                : (versionError ?? undefined)
+                : (versionError ??
+                  (missingTestAccount
+                    ? "Select a Test Account before executing."
+                    : undefined))
             }
           >
             {executing ? "Executing…" : "Execute"}
           </Button>
           {versionError && (
             <p className="m-0 mt-2 text-xs text-error">{versionError}</p>
+          )}
+          {missingTestAccount && (
+            <p className="m-0 mt-2 text-xs text-error">
+              Select a Test Account before executing.
+            </p>
           )}
           {error && <p className="m-0 mt-2 text-xs text-error">{error}</p>}
           {runBlockers.length > 0 && (
@@ -124,6 +160,8 @@ export function RunExecutePanel({
           timedOut={timedOut}
           error={error}
           onRunAgain={reset}
+          onViewSnapshot={onViewSnapshot}
+          onViewComparison={onViewComparison}
         />
       )}
     </Card>

@@ -50,6 +50,7 @@ export function CreateEditEnvironmentModal({
     environmentName: string
     classification: EnvironmentClassification
     allowRun?: boolean
+    baseUrl?: string
   }) => void
 
   onCancel: () => void
@@ -64,6 +65,10 @@ export function CreateEditEnvironmentModal({
   const [allowRun, setAllowRun] = useState(editing?.allowRun ?? true)
 
   const [touchedAllowRun, setTouchedAllowRun] = useState(false)
+
+  const [baseUrl, setBaseUrl] = useState(editing?.baseUrl ?? "")
+
+  const [touchedBaseUrl, setTouchedBaseUrl] = useState(false)
 
   const [localError, setLocalError] = useState<string | null>(null)
 
@@ -89,9 +94,14 @@ export function CreateEditEnvironmentModal({
         environmentName: name.trim(),
         classification,
         ...(touchedAllowRun ? { allowRun } : {}),
+        ...(touchedBaseUrl ? { baseUrl: baseUrl.trim() } : {}),
       })
     } else {
-      onSave({ environmentName: name.trim(), classification })
+      onSave({
+        environmentName: name.trim(),
+        classification,
+        ...(baseUrl.trim() ? { baseUrl: baseUrl.trim() } : {}),
+      })
     }
   }
 
@@ -128,6 +138,26 @@ export function CreateEditEnvironmentModal({
         <span className="mt-1 block text-[11px] text-muted">
           Independent of the Environment Name — naming an Environment
           "Production" does not make it Production.
+        </span>
+      </div>
+      <div className="mb-3">
+        <Input
+          label="Domain / Base URL"
+          type="text"
+          value={baseUrl}
+          onChange={(e) => {
+            setBaseUrl(e.target.value)
+
+            setTouchedBaseUrl(true)
+
+            setLocalError(null)
+          }}
+          placeholder="https://example.com"
+        />
+        <span className="mt-1 block text-[11px] text-muted">
+          Domain only — no path, query, or fragment. Used as a fallback Full
+          URL for this Environment's APIs; a per-API Full URL override always
+          wins.
         </span>
       </div>
       <div className="mb-3 flex items-center justify-between">

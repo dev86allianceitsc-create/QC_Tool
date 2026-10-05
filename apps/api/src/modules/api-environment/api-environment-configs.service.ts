@@ -3,6 +3,7 @@ import { PrismaService } from "../../prisma/prisma.service";
 import { BusinessException } from "../../common/exceptions/business.exception";
 import { AuditWriterService } from "../audit/audit-writer.service";
 import { PutApiEnvironmentConfigDto } from "./dto/put-api-environment-config.dto";
+import { resolveEffectiveUrl, type EffectiveUrlSource } from "./full-url-resolution.util";
 
 export interface ApiEnvironmentConfigListItem {
   environmentId: string;
@@ -12,6 +13,9 @@ export interface ApiEnvironmentConfigListItem {
   allowRun: boolean;
   urlStatus: "CONFIGURED" | "NOT_CONFIGURED";
   fullUrl: string | null;
+  environmentBaseUrl: string | null;
+  effectiveUrl: string | null;
+  effectiveUrlSource: EffectiveUrlSource;
   credentialStatus: "NOT_REQUIRED" | "CONFIGURED" | "NOT_CONFIGURED";
 }
 
@@ -64,13 +68,24 @@ export class ApiEnvironmentConfigsService {
       throw new BusinessException(HttpStatus.NOT_FOUND, "NOT_FOUND", "API does not exist");
     }
 
-    const [environments, configs, authConfigs] = await Promise.all([
+    const [environments, configs] = await Promise.all([
       this.prisma.environment.findMany({ where: { projectId }, orderBy: { createdAt: "asc" } }),
       this.prisma.apiEnvironmentConfig.findMany({ where: { apiId } }),
-      this.prisma.authenticationConfiguration.findMany({ where: { apiId } }),
+    ]);
+    // Authentication is now an Environment-level concern (REVISION 3C-R02),
+    // shared by every API in that Environment — so it's keyed by
+    // environmentId alone, not (apiId, environmentId). LOGIN_FORM's secret
+    // moved to TestAccount, so its "configured" signal is "at least one Test
+    // Account exists for this Environment" rather than a password on the
+    // auth config row itself.
+    const environmentIds = environments.map((e) => e.environmentId);
+    const [authConfigs, testAccounts] = await Promise.all([
+      this.prisma.authenticationConfiguration.findMany({ where: { environmentId: { in: environmentIds } } }),
+      this.prisma.testAccount.findMany({ where: { environmentId: { in: environmentIds } }, select: { environmentId: true } }),
     ]);
     const configByEnvironmentId = new Map(configs.map((c) => [c.environmentId, c]));
     const authConfigByEnvironmentId = new Map(authConfigs.map((c) => [c.environmentId, c]));
+    const environmentIdsWithTestAccounts = new Set(testAccounts.map((t) => t.environmentId));
 
     return {
       apiId,
@@ -78,7 +93,14 @@ export class ApiEnvironmentConfigsService {
         const config = configByEnvironmentId.get(env.environmentId);
         const authConfig = authConfigByEnvironmentId.get(env.environmentId);
         const authType = authConfig?.authType ?? "NONE";
-        const secretPresent = authConfig ? authConfig.passwordCiphertext !== null || authConfig.bearerTokenCiphertext !== null : false;
+        const secretPresent = !authConfig
+          ? false
+          : authConfig.authType === "BEARER_TOKEN"
+            ? authConfig.bearerTokenCiphertext !== null
+            : authConfig.authType === "LOGIN_FORM"
+              ? environmentIdsWithTestAccounts.has(env.environmentId)
+              : false;
+        const effective = resolveEffectiveUrl(config?.fullUrl, env.baseUrl, api.path);
         return {
           environmentId: env.environmentId,
           environmentName: env.environmentName,
@@ -87,6 +109,9 @@ export class ApiEnvironmentConfigsService {
           allowRun: env.allowRun,
           urlStatus: config ? "CONFIGURED" : "NOT_CONFIGURED",
           fullUrl: config?.fullUrl ?? null,
+          environmentBaseUrl: env.baseUrl,
+          effectiveUrl: effective.url,
+          effectiveUrlSource: effective.source,
           credentialStatus: authType === "NONE" ? "NOT_REQUIRED" : secretPresent ? "CONFIGURED" : "NOT_CONFIGURED",
         };
       }),

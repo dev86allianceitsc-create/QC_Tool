@@ -9,6 +9,7 @@ describe("ApiEnvironmentConfigsService", () => {
       environment: { findMany: jest.Mock; findFirst: jest.Mock };
       apiEnvironmentConfig: { findMany: jest.Mock; findUnique: jest.Mock; upsert: jest.Mock };
       authenticationConfiguration: { findMany: jest.Mock };
+      testAccount: { findMany: jest.Mock };
       project: { findFirst: jest.Mock };
       $transaction: jest.Mock;
     } = {
@@ -16,6 +17,7 @@ describe("ApiEnvironmentConfigsService", () => {
       environment: { findMany: jest.fn().mockResolvedValue([]), findFirst: jest.fn() },
       apiEnvironmentConfig: { findMany: jest.fn().mockResolvedValue([]), findUnique: jest.fn(), upsert: jest.fn() },
       authenticationConfiguration: { findMany: jest.fn().mockResolvedValue([]) },
+      testAccount: { findMany: jest.fn().mockResolvedValue([]) },
       project: { findFirst: jest.fn().mockResolvedValue({ projectId: "p-1", projectStatus: "ACTIVE", deletedAt: null }) },
       $transaction: jest.fn(async (cb: (tx: unknown) => unknown) => cb(prisma)),
     };
@@ -26,10 +28,10 @@ describe("ApiEnvironmentConfigsService", () => {
   describe("list (API-APIENV-001)", () => {
     it("represents an Environment with no config row as NOT_CONFIGURED / fullUrl null, including INACTIVE Environments", async () => {
       const { service, prisma } = makeService();
-      prisma.apiConfiguration.findFirst.mockResolvedValue({ apiId: "a-1", apiName: "X" });
+      prisma.apiConfiguration.findFirst.mockResolvedValue({ apiId: "a-1", apiName: "X", path: "/widgets" });
       prisma.environment.findMany.mockResolvedValue([
-        { environmentId: "e-1", environmentName: "Prod", classification: "PRODUCTION", environmentStatus: "ACTIVE", allowRun: false },
-        { environmentId: "e-2", environmentName: "Old", classification: "NON_PRODUCTION", environmentStatus: "INACTIVE", allowRun: true },
+        { environmentId: "e-1", environmentName: "Prod", classification: "PRODUCTION", environmentStatus: "ACTIVE", allowRun: false, baseUrl: null },
+        { environmentId: "e-2", environmentName: "Old", classification: "NON_PRODUCTION", environmentStatus: "INACTIVE", allowRun: true, baseUrl: null },
       ]);
       prisma.apiEnvironmentConfig.findMany.mockResolvedValue([{ environmentId: "e-1", fullUrl: "https://a.example.com" }]);
 
@@ -51,9 +53,10 @@ describe("ApiEnvironmentConfigsService", () => {
         { environmentId: "e-3", environmentName: "Prod", classification: "PRODUCTION", environmentStatus: "ACTIVE", allowRun: false },
       ]);
       prisma.authenticationConfiguration.findMany.mockResolvedValue([
-        { environmentId: "e-1", authType: "LOGIN_FORM", passwordCiphertext: Buffer.from("ct"), bearerTokenCiphertext: null },
-        { environmentId: "e-2", authType: "BEARER_TOKEN", passwordCiphertext: null, bearerTokenCiphertext: null },
+        { environmentId: "e-1", authType: "LOGIN_FORM", bearerTokenCiphertext: null },
+        { environmentId: "e-2", authType: "BEARER_TOKEN", bearerTokenCiphertext: null },
       ]);
+      prisma.testAccount.findMany.mockResolvedValue([{ environmentId: "e-1" }]);
 
       const result = await service.list("p-1", "a-1");
 
@@ -61,6 +64,65 @@ describe("ApiEnvironmentConfigsService", () => {
         expect.objectContaining({ environmentId: "e-1", credentialStatus: "CONFIGURED" }),
         expect.objectContaining({ environmentId: "e-2", credentialStatus: "NOT_CONFIGURED" }),
         expect.objectContaining({ environmentId: "e-3", credentialStatus: "NOT_REQUIRED" }),
+      ]);
+    });
+  });
+
+  describe("list — effectiveUrl resolution (Phase 1 domain binding)", () => {
+    it("resolves to ENVIRONMENT_DOMAIN when only the Environment's baseUrl is set", async () => {
+      const { service, prisma } = makeService();
+      prisma.apiConfiguration.findFirst.mockResolvedValue({ apiId: "a-1", apiName: "X", path: "/widgets/{id}" });
+      prisma.environment.findMany.mockResolvedValue([
+        { environmentId: "e-1", environmentName: "Dev", classification: "NON_PRODUCTION", environmentStatus: "ACTIVE", allowRun: true, baseUrl: "https://domain.example.com" },
+      ]);
+      prisma.apiEnvironmentConfig.findMany.mockResolvedValue([]);
+
+      const result = await service.list("p-1", "a-1");
+
+      expect(result.items).toEqual([
+        expect.objectContaining({
+          environmentId: "e-1",
+          fullUrl: null,
+          environmentBaseUrl: "https://domain.example.com",
+          effectiveUrl: "https://domain.example.com/widgets/{id}",
+          effectiveUrlSource: "ENVIRONMENT_DOMAIN",
+        }),
+      ]);
+    });
+
+    it("resolves to OVERRIDE when a config row exists, even if the Environment also has a baseUrl", async () => {
+      const { service, prisma } = makeService();
+      prisma.apiConfiguration.findFirst.mockResolvedValue({ apiId: "a-1", apiName: "X", path: "/widgets/{id}" });
+      prisma.environment.findMany.mockResolvedValue([
+        { environmentId: "e-1", environmentName: "Dev", classification: "NON_PRODUCTION", environmentStatus: "ACTIVE", allowRun: true, baseUrl: "https://domain.example.com" },
+      ]);
+      prisma.apiEnvironmentConfig.findMany.mockResolvedValue([{ environmentId: "e-1", fullUrl: "https://override.example.com/widgets/{id}" }]);
+
+      const result = await service.list("p-1", "a-1");
+
+      expect(result.items).toEqual([
+        expect.objectContaining({
+          environmentId: "e-1",
+          fullUrl: "https://override.example.com/widgets/{id}",
+          environmentBaseUrl: "https://domain.example.com",
+          effectiveUrl: "https://override.example.com/widgets/{id}",
+          effectiveUrlSource: "OVERRIDE",
+        }),
+      ]);
+    });
+
+    it("resolves to NOT_CONFIGURED when neither a config row nor a baseUrl is set", async () => {
+      const { service, prisma } = makeService();
+      prisma.apiConfiguration.findFirst.mockResolvedValue({ apiId: "a-1", apiName: "X", path: "/widgets/{id}" });
+      prisma.environment.findMany.mockResolvedValue([
+        { environmentId: "e-1", environmentName: "Dev", classification: "NON_PRODUCTION", environmentStatus: "ACTIVE", allowRun: true, baseUrl: null },
+      ]);
+      prisma.apiEnvironmentConfig.findMany.mockResolvedValue([]);
+
+      const result = await service.list("p-1", "a-1");
+
+      expect(result.items).toEqual([
+        expect.objectContaining({ environmentId: "e-1", effectiveUrl: null, effectiveUrlSource: "NOT_CONFIGURED" }),
       ]);
     });
   });

@@ -6,7 +6,7 @@ import { Button } from "../../components/ui/Button"
 
 import { HttpMethodBadge } from "../../components/ui/HttpMethodBadge"
 
-import { thClass, tdClass, trHoverClass } from "../../components/ui/table"
+import { thClass, thCenterClass, tdClass, trHoverClass } from "../../components/ui/table"
 
 import { STATUS_TONE, formatCode, formatTimestamp } from "./ExecutionResultView"
 
@@ -302,7 +302,7 @@ export function ProjectTestRunsScreen({
                     <th className={thClass}>Created / Started</th>
                     <th className={thClass}>Status</th>
                     <th className={thClass}>Outcome</th>
-                    <th className={`${thClass} text-center`}>Actions</th>
+                    <th className={thCenterClass}>Actions</th>
                   </tr>
                 </thead>
                 <tbody>

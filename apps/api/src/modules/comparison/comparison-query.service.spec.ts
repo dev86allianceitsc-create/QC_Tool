@@ -55,6 +55,8 @@ function comparisonRow(overrides: Record<string, unknown> = {}) {
         inputCheckOutcome: "COMPATIBLE",
         comparisonResult: "SAME",
         appliedRuleManifest: { ruleManifestVersion: 1, exclusions: [], representationBoundary: "DEFAULT" },
+        createdAt: new Date("2026-01-01T00:00:00Z"),
+        startedAt: new Date("2026-01-01T00:00:00Z"),
         endedAt: new Date("2026-01-01T00:05:00Z"),
         _count: { findings: 0 },
       },
@@ -75,6 +77,7 @@ describe("ComparisonQueryService", () => {
         findFirst: jest.fn(),
         findMany: jest.fn().mockResolvedValue([]),
       },
+      snapshotPayload: { findUnique: jest.fn() },
       snapshotInvalidation: { findUnique: jest.fn().mockResolvedValue(null) },
       comparison: {
         findMany: jest.fn().mockResolvedValue([]),
@@ -84,6 +87,7 @@ describe("ComparisonQueryService", () => {
       comparisonAttempt: {
         findFirst: jest.fn(),
         findMany: jest.fn().mockResolvedValue([]),
+        findUniqueOrThrow: jest.fn(),
         count: jest.fn().mockResolvedValue(0),
       },
       comparisonFinding: {
@@ -101,6 +105,7 @@ describe("ComparisonQueryService", () => {
       createManualComparison: jest.fn(),
       createComparisonChain: jest.fn(),
       retryComparisonAttempt: jest.fn(),
+      reevaluateComparisonAttempt: jest.fn(),
       recordClassification: jest.fn(),
     };
     const comparisonEngineService = { processAttempt: jest.fn().mockResolvedValue(undefined) };
@@ -372,13 +377,49 @@ describe("ComparisonQueryService", () => {
       expect(result.appliedRuleSummary).toBeNull();
     });
 
+    it("does not re-dispatch a non-terminal attempt that is still fresh", async () => {
+      const { service, prisma, comparisonEngineService } = makeService();
+      const fresh = new Date(Date.now() - 1000);
+      prisma.comparison.findUnique.mockResolvedValue(
+        comparisonRow({ attempts: [{ ...comparisonRow().attempts[0], processingStatus: "RUNNING", startedAt: fresh, createdAt: fresh }] }),
+      );
+
+      await service.getComparison("cmp-1");
+
+      expect(comparisonEngineService.processAttempt).not.toHaveBeenCalled();
+    });
+
+    it("re-dispatches a non-terminal attempt orphaned past the staleness threshold", async () => {
+      const { service, prisma, comparisonEngineService } = makeService();
+      const stale = new Date(Date.now() - 60_000);
+      prisma.comparison.findUnique.mockResolvedValue(
+        comparisonRow({ attempts: [{ ...comparisonRow().attempts[0], processingStatus: "QUEUED", startedAt: null, createdAt: stale }] }),
+      );
+
+      await service.getComparison("cmp-1");
+
+      expect(comparisonEngineService.processAttempt).toHaveBeenCalledWith("att-1");
+    });
+
+    it("never re-dispatches once the attempt has reached a terminal state", async () => {
+      const { service, prisma, comparisonEngineService } = makeService();
+      const stale = new Date(Date.now() - 60_000);
+      prisma.comparison.findUnique.mockResolvedValue(
+        comparisonRow({ attempts: [{ ...comparisonRow().attempts[0], processingStatus: "COMPLETED", startedAt: stale, createdAt: stale }] }),
+      );
+
+      await service.getComparison("cmp-1");
+
+      expect(comparisonEngineService.processAttempt).not.toHaveBeenCalled();
+    });
+
     it("exposes appliedRuleSummary (version/boundary/exclusionCount only) once terminal", async () => {
       const { service, prisma } = makeService();
       prisma.comparison.findUnique.mockResolvedValue(comparisonRow());
 
       const result = await service.getComparison("cmp-1");
 
-      expect(result.appliedRuleSummary).toEqual({ ruleManifestVersion: "1", representationBoundary: "DEFAULT", exclusionCount: 0 });
+      expect(result.appliedRuleSummary).toEqual({ ruleManifestVersion: "1", representationBoundary: "DEFAULT", exclusionCount: 0, ignoreRuleCount: 0 });
       expect(result.outputDifferenceCount).toBe(0);
       expect(result.latencyDeltaMs).toBe(30);
     });
@@ -406,6 +447,7 @@ describe("ComparisonQueryService", () => {
 
     it("filters by phase and derives ruleVersion from the latest attempt's manifest", async () => {
       const { service, prisma } = makeService();
+      prisma.comparison.findUnique.mockResolvedValue({ baselineSnapshotId: "snap-a", targetSnapshotId: "snap-b" });
       prisma.comparisonAttempt.findFirst.mockResolvedValue({
         comparisonAttemptId: "att-1",
         processingStatus: "COMPLETED",
@@ -421,6 +463,112 @@ describe("ComparisonQueryService", () => {
       expect(prisma.comparisonFinding.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { comparisonAttemptId: "att-1", phase: "OUTPUT" } }));
       expect(result.items[0].ruleVersion).toBe("2");
       expect(result.items[0].location).toEqual({ path: "$.a" });
+    });
+
+    it("throws 404 when the Comparison row itself cannot be found", async () => {
+      const { service, prisma } = makeService();
+      prisma.comparison.findUnique.mockResolvedValue(null);
+      prisma.comparisonAttempt.findFirst.mockResolvedValue({
+        comparisonAttemptId: "att-1",
+        processingStatus: "COMPLETED",
+        comparisonResult: "DIFFERENT",
+        appliedRuleManifest: { ruleManifestVersion: 1 },
+      });
+
+      const error = await captureError(service.listComparisonFindings("cmp-1", {} as ListComparisonFindingsQueryDto));
+      expect(error.getStatus()).toBe(404);
+    });
+
+    it("re-derives the real A/B header text for a non-sensitive response header finding", async () => {
+      const { service, prisma } = makeService();
+      prisma.comparison.findUnique.mockResolvedValue({ baselineSnapshotId: "snap-a", targetSnapshotId: "snap-b" });
+      prisma.comparisonAttempt.findFirst.mockResolvedValue({
+        comparisonAttemptId: "att-1",
+        processingStatus: "COMPLETED",
+        comparisonResult: "DIFFERENT",
+        appliedRuleManifest: { ruleManifestVersion: 1 },
+      });
+      prisma.comparisonFinding.findMany.mockResolvedValue([
+        { comparisonFindingId: "f-1", phase: "OUTPUT", component: "RESPONSE_HEADER", differenceKind: "VALUE_CHANGED", findingOrdinal: 1, locationPath: "age", aByteOffset: null, aByteLength: null, bByteOffset: null, bByteLength: null, aValueKind: null, bValueKind: null, ruleCode: "R1", safeSummary: "changed" },
+      ]);
+      prisma.snapshot.findUnique.mockImplementation(({ where }: { where: { snapshotId: string } }) => {
+        if (where.snapshotId === "snap-a") return Promise.resolve({ httpStatusCode: 200, requestHeaders: [], responseHeaders: [{ key: "age", value: "123" }] });
+        return Promise.resolve({ httpStatusCode: 200, requestHeaders: [], responseHeaders: [{ key: "age", value: "167" }] });
+      });
+
+      const result = await service.listComparisonFindings("cmp-1", {} as ListComparisonFindingsQueryDto);
+
+      expect(result.items[0].a).toMatchObject({ presenceKind: "VALUE", safeText: "123", isRedacted: false });
+      expect(result.items[0].b).toMatchObject({ presenceKind: "VALUE", safeText: "167", isRedacted: false });
+      expect(prisma.snapshotPayload.findUnique).not.toHaveBeenCalled();
+    });
+
+    it("redacts a sensitive header finding end-to-end, never leaking the stored value", async () => {
+      const { service, prisma } = makeService();
+      prisma.comparison.findUnique.mockResolvedValue({ baselineSnapshotId: "snap-a", targetSnapshotId: "snap-b" });
+      prisma.comparisonAttempt.findFirst.mockResolvedValue({
+        comparisonAttemptId: "att-1",
+        processingStatus: "COMPLETED",
+        comparisonResult: "DIFFERENT",
+        appliedRuleManifest: { ruleManifestVersion: 1 },
+      });
+      prisma.comparisonFinding.findMany.mockResolvedValue([
+        { comparisonFindingId: "f-1", phase: "INPUT", component: "REQUEST_HEADER", differenceKind: "VALUE_CHANGED", findingOrdinal: 1, locationPath: "authorization", aByteOffset: null, aByteLength: null, bByteOffset: null, bByteLength: null, aValueKind: null, bValueKind: null, ruleCode: "R1", safeSummary: "changed" },
+      ]);
+      prisma.snapshot.findUnique.mockImplementation(({ where }: { where: { snapshotId: string } }) => {
+        if (where.snapshotId === "snap-a") return Promise.resolve({ httpStatusCode: 200, requestHeaders: [{ key: "Authorization", value: "Bearer secret-a" }], responseHeaders: [] });
+        return Promise.resolve({ httpStatusCode: 200, requestHeaders: [{ key: "Authorization", value: "Bearer secret-b" }], responseHeaders: [] });
+      });
+
+      const result = await service.listComparisonFindings("cmp-1", {} as ListComparisonFindingsQueryDto);
+
+      expect(result.items[0].a).toMatchObject({ safeText: "[REDACTED]", isRedacted: true });
+      expect(result.items[0].b).toMatchObject({ safeText: "[REDACTED]", isRedacted: true });
+      expect(JSON.stringify(result)).not.toContain("secret-a");
+      expect(JSON.stringify(result)).not.toContain("secret-b");
+    });
+
+    it("only loads SnapshotPayload bytes when the page actually contains a body-component finding", async () => {
+      const { service, prisma } = makeService();
+      prisma.comparison.findUnique.mockResolvedValue({ baselineSnapshotId: "snap-a", targetSnapshotId: "snap-b" });
+      prisma.comparisonAttempt.findFirst.mockResolvedValue({
+        comparisonAttemptId: "att-1",
+        processingStatus: "COMPLETED",
+        comparisonResult: "DIFFERENT",
+        appliedRuleManifest: { ruleManifestVersion: 1 },
+      });
+      prisma.comparisonFinding.findMany.mockResolvedValue([
+        { comparisonFindingId: "f-1", phase: "OUTPUT", component: "HTTP_STATUS", differenceKind: "VALUE_CHANGED", findingOrdinal: 1, locationPath: null, aByteOffset: null, aByteLength: null, bByteOffset: null, bByteLength: null, aValueKind: null, bValueKind: null, ruleCode: "R1", safeSummary: "changed" },
+      ]);
+      prisma.snapshot.findUnique.mockResolvedValue({ httpStatusCode: 200, requestHeaders: [], responseHeaders: [] });
+
+      await service.listComparisonFindings("cmp-1", {} as ListComparisonFindingsQueryDto);
+
+      expect(prisma.snapshotPayload.findUnique).not.toHaveBeenCalled();
+    });
+
+    it("re-derives real A/B body text for a differing JSON scalar finding", async () => {
+      const { service, prisma } = makeService();
+      prisma.comparison.findUnique.mockResolvedValue({ baselineSnapshotId: "snap-a", targetSnapshotId: "snap-b" });
+      prisma.comparisonAttempt.findFirst.mockResolvedValue({
+        comparisonAttemptId: "att-1",
+        processingStatus: "COMPLETED",
+        comparisonResult: "DIFFERENT",
+        appliedRuleManifest: { ruleManifestVersion: 1 },
+      });
+      prisma.comparisonFinding.findMany.mockResolvedValue([
+        { comparisonFindingId: "f-1", phase: "OUTPUT", component: "RESPONSE_BODY", differenceKind: "VALUE_CHANGED", findingOrdinal: 1, locationPath: "$.count", aByteOffset: 9n, aByteLength: 1n, bByteOffset: 9n, bByteLength: 1n, aValueKind: "number", bValueKind: "number", ruleCode: "R1", safeSummary: "changed" },
+      ]);
+      prisma.snapshot.findUnique.mockResolvedValue({ httpStatusCode: 200, requestHeaders: [], responseHeaders: [] });
+      prisma.snapshotPayload.findUnique.mockImplementation(({ where }: { where: { snapshotId: string } }) => {
+        if (where.snapshotId === "snap-a") return Promise.resolve({ requestBody: null, responseBody: Buffer.from('{"count":1}', "utf-8") });
+        return Promise.resolve({ requestBody: null, responseBody: Buffer.from('{"count":2}', "utf-8") });
+      });
+
+      const result = await service.listComparisonFindings("cmp-1", {} as ListComparisonFindingsQueryDto);
+
+      expect(result.items[0].a).toMatchObject({ presenceKind: "VALUE", displayKind: "number", safeText: "1" });
+      expect(result.items[0].b).toMatchObject({ presenceKind: "VALUE", displayKind: "number", safeText: "2" });
     });
   });
 
@@ -451,6 +599,59 @@ describe("ComparisonQueryService", () => {
       expect(result).toEqual({ comparisonAttemptId: "att-2", attemptNumber: 2, processingStatus: "QUEUED" });
       expect(comparisonEngineService.processAttempt).toHaveBeenCalledWith("att-2");
       expect(auditWriter.record).toHaveBeenCalledWith(expect.objectContaining({ eventType: "COMPARISON_RETRY_REQUESTED", result: "SUCCESS" }));
+    });
+  });
+
+  describe("reevaluateComparison", () => {
+    it("maps COMPARISON_NOT_FOUND to 404", async () => {
+      const { service, comparisonService } = makeService();
+      comparisonService.reevaluateComparisonAttempt.mockResolvedValue({ ok: false, code: "COMPARISON_NOT_FOUND" });
+
+      const error = await captureError(service.reevaluateComparison("cmp-x", "u-1"));
+      expect(error.getStatus()).toBe(404);
+    });
+
+    it("maps LATEST_ATTEMPT_NOT_COMPLETED to 409 using that code as errorCode", async () => {
+      const { service, comparisonService } = makeService();
+      comparisonService.reevaluateComparisonAttempt.mockResolvedValue({ ok: false, code: "LATEST_ATTEMPT_NOT_COMPLETED" });
+
+      const error = await captureError(service.reevaluateComparison("cmp-1", "u-1"));
+      expect(error.getStatus()).toBe(409);
+      expect(error.getResponse()).toMatchObject({ errorCode: "LATEST_ATTEMPT_NOT_COMPLETED" });
+    });
+
+    it("maps CONCURRENT_REEVALUATION to 409 using that code as errorCode", async () => {
+      const { service, comparisonService } = makeService();
+      comparisonService.reevaluateComparisonAttempt.mockResolvedValue({ ok: false, code: "CONCURRENT_REEVALUATION" });
+
+      const error = await captureError(service.reevaluateComparison("cmp-1", "u-1"));
+      expect(error.getStatus()).toBe(409);
+      expect(error.getResponse()).toMatchObject({ errorCode: "CONCURRENT_REEVALUATION" });
+    });
+
+    it("awaits the engine before reading back the attempt and auditing, returning the attempt's real terminal processingStatus/result", async () => {
+      const { service, comparisonService, comparisonEngineService, prisma, auditWriter } = makeService();
+      comparisonService.reevaluateComparisonAttempt.mockResolvedValue({ ok: true, comparisonAttemptId: "att-2", attemptNumber: 2 });
+      const callOrder: string[] = [];
+      comparisonEngineService.processAttempt.mockImplementation(async () => {
+        callOrder.push("processAttempt");
+      });
+      prisma.comparisonAttempt.findUniqueOrThrow.mockImplementation(async () => {
+        callOrder.push("findUniqueOrThrow");
+        return { processingStatus: "COMPLETED", comparisonResult: "SAME" };
+      });
+      auditWriter.record.mockImplementation(async () => {
+        callOrder.push("audit");
+      });
+
+      const result = await service.reevaluateComparison("cmp-1", "u-1");
+
+      expect(callOrder).toEqual(["processAttempt", "findUniqueOrThrow", "audit"]);
+      expect(comparisonEngineService.processAttempt).toHaveBeenCalledWith("att-2");
+      expect(result).toEqual({ comparisonAttemptId: "att-2", attemptNumber: 2, processingStatus: "COMPLETED", result: "SAME" });
+      expect(auditWriter.record).toHaveBeenCalledWith(
+        expect.objectContaining({ eventType: "COMPARISON_REEVALUATED", result: "SUCCESS", targetType: "COMPARISON", targetId: "cmp-1" }),
+      );
     });
   });
 

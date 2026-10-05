@@ -1,9 +1,13 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
+
+import { loadRunRequestValuesDraft, saveRunRequestValuesDraft } from "./runRequestValuesDraft.util"
 
 import type {
   ApiEnvironmentConfigListItem,
   EnvironmentListItem,
 } from "./apiEnvironment.types"
+
+import type { AuthType, TestAccount } from "./authentication.types"
 
 import type {
   RequestInputDefinition,
@@ -55,6 +59,8 @@ const RUN_STEP_ORDER: RunApiStep[] = [
 // is ever persisted or sent (§20 boundary, REQ-VER-001 persistence deferred).
 
 export function RunApiArea({
+  apiId,
+
   httpMethod,
 
   environments,
@@ -73,12 +79,26 @@ export function RunApiArea({
 
   authTypeLabel,
 
+  authType,
+
   credentialStatus,
+
+  testAccounts,
+
+  testAccountsLoading,
 
   runBlockers,
 
   runExecution,
+
+  onViewSnapshot,
+
+  onViewComparison,
+
+  initialValues,
 }: {
+  apiId: string
+
   httpMethod: string
 
   environments: EnvironmentListItem[]
@@ -97,24 +117,60 @@ export function RunApiArea({
 
   authTypeLabel: string | null
 
+  authType: AuthType | null
+
   credentialStatus: ApiEnvironmentConfigListItem["credentialStatus"] | null
+
+  testAccounts: TestAccount[]
+
+  testAccountsLoading: boolean
 
   runBlockers: string[]
 
   runExecution: UseSingleRunExecutionResult
+
+  onViewSnapshot?: (snapshotId: string) => void
+
+  onViewComparison?: (comparisonId: string) => void
+
+  initialValues?: RunRequestValues
 }) {
   const [step, setStep] = useState<RunApiStep>("executionTarget")
 
-  const [values, setValues] = useState<RunRequestValues>({
-    pathValues: {},
-    queryValues: {},
-    headerValues: {},
-    bodyValue: "",
-  })
+  const [values, setValues] = useState<RunRequestValues>(
+    () =>
+      initialValues ??
+      loadRunRequestValuesDraft(apiId, selectedEnvironmentId) ?? {
+        pathValues: {},
+        queryValues: {},
+        headerValues: {},
+        bodyValue: "",
+      },
+  )
 
   const [apiVersion, setApiVersion] = useState("")
 
   const [dbVersion, setDbVersion] = useState("")
+
+  const [testAccountId, setTestAccountId] = useState<string | null>(null)
+
+  const [justSavedDraft, setJustSavedDraft] = useState(false)
+
+  useEffect(() => {
+    if (initialValues && selectedEnvironmentId) {
+      saveRunRequestValuesDraft(apiId, selectedEnvironmentId, initialValues)
+    }
+  }, [initialValues, selectedEnvironmentId, apiId])
+
+  useEffect(() => {
+    setTestAccountId(null)
+  }, [selectedEnvironmentId])
+
+  function handleSaveDraft() {
+    saveRunRequestValuesDraft(apiId, selectedEnvironmentId, values)
+    setJustSavedDraft(true)
+    setTimeout(() => setJustSavedDraft(false), 1500)
+  }
 
   const steps: StepSidebarItem[] = [
     {
@@ -169,7 +225,12 @@ export function RunApiArea({
             config={config}
             configsLoading={configsLoading}
             authTypeLabel={authTypeLabel}
+            authType={authType}
             credentialStatus={credentialStatus}
+            testAccounts={testAccounts}
+            testAccountsLoading={testAccountsLoading}
+            selectedTestAccountId={testAccountId}
+            onSelectTestAccount={setTestAccountId}
             runBlockers={runBlockers}
           />
         )}
@@ -180,6 +241,8 @@ export function RunApiArea({
               definition={requestInputDefinition}
               values={values}
               onChange={setValues}
+              onSaveDraft={handleSaveDraft}
+              justSavedDraft={justSavedDraft}
             />
           ) : (
             <Card>
@@ -201,7 +264,7 @@ export function RunApiArea({
         {step === "requestPreview" && (
           <RunRequestPreviewPanel
             httpMethod={httpMethod}
-            fullUrl={config?.fullUrl ?? null}
+            fullUrl={config?.effectiveUrl ?? null}
             values={values}
             authTypeLabel={authTypeLabel}
             credentialStatus={credentialStatus}
@@ -212,12 +275,16 @@ export function RunApiArea({
         {step === "execute" && (
           <RunExecutePanel
             httpMethod={httpMethod}
-            fullUrl={config?.fullUrl ?? null}
+            fullUrl={config?.effectiveUrl ?? null}
             values={values}
             apiVersion={apiVersion}
             dbVersion={dbVersion}
+            authType={authType}
+            testAccountId={testAccountId}
             runBlockers={runBlockers}
             runExecution={runExecution}
+            onViewSnapshot={onViewSnapshot}
+            onViewComparison={onViewComparison}
           />
         )}
 

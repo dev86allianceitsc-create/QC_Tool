@@ -98,7 +98,6 @@ export function useBatchApiContext(
 
                 getAuthenticationConfiguration(
                   projectId,
-                  apiId,
                   environmentId,
                   accessToken,
                 ),

@@ -20,11 +20,11 @@ export type SkipReasonCode = "MISSING_FULL_URL" | "MISSING_REQUIRED_INPUT";
 // point-in-time acceptance gate, not a dispatch-time gate.
 export function evaluateEligibility(
   apiPath: string,
-  config: { fullUrl: string } | null,
+  effectiveUrl: string | null,
   parameterDefinitions: EligibilityParameterDefinition[],
   requestValues: EligibilityRequestValues,
 ): SkipReasonCode | null {
-  if (!config) {
+  if (!effectiveUrl) {
     return "MISSING_FULL_URL";
   }
 

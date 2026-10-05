@@ -1,4 +1,6 @@
-import { useMemo } from "react"
+import { useState } from "react"
+
+import { ApiError } from "../../services/api-client"
 
 import { Badge } from "../../components/ui/Badge"
 
@@ -8,39 +10,31 @@ import { Card } from "../../components/ui/Card"
 
 import { thClass, tdClass, trHoverClass } from "../../components/ui/table"
 
+import { formatCode, formatTimestamp } from "./ExecutionResultView"
+
 import {
-  OUTCOME_TONE,
-  STATUS_TONE,
-  formatCode,
-  formatTimestamp,
-} from "./ExecutionResultView"
+  getInputSummaryFields,
+  getTestCaseResultDisplay,
+} from "./test-case-format.util"
 
 import { useApiRunHistory } from "./useApiRunHistory"
 
-import { useEnvironmentList } from "./useEnvironmentList"
+import { useTestCases } from "./useTestCases"
 
-const selectClass =
-  "rounded-md border border-border px-2.5 py-1.5 text-xs text-gray-900"
+import type { TestCaseListItem } from "./run.types"
 
-const labelClass =
-  "flex flex-col gap-1 text-[11px] font-semibold uppercase tracking-wide text-muted"
+// A Test Case card shows only its first few Request Input fields, with the
+// rest collapsed behind "+ N more" — keeps the card scannable for APIs with
+// many parameters. The full set remains visible in the Execution Detail
+// drill-through.
+const MAX_CARD_INPUT_FIELDS = 5
 
-// UI-RUN-08 Run History — this API's past Run Executions (GET
-
-// /projects/:projectId/apis/:apiId/run-executions, API-RUN-005), regardless
-
-// of whether they came from a Single or a Batch Run. Each row is already one
-
-// execution (ApiRunExecutionListItem carries both runId and executionId), so
-
-// "View" goes straight to Execution Detail rather than through Run Result.
-
-// ListApiRunExecutionsQueryDto only supports an Environment filter (no
-
-// Type/Status/date-range like Project Test Runs), so the filter bar here is
-
-// intentionally narrower than ProjectTestRunsScreen's (UI-RUN-07).
-
+// UI-RUN-08 Run History, redesigned for Phase 3 Test Case History & Run
+// Again (§8). Default view is one card per distinct Test Case (testCaseKey)
+// for this API — "one row per test case ever run," not a page of raw
+// executions. "View History" drills into that one Test Case's chronological
+// execution list (the previous flat-table view, now scoped to a single
+// testCaseKey instead of showing every execution for the API at once).
 export function RunHistoryArea({
   projectId,
 
@@ -49,6 +43,8 @@ export function RunHistoryArea({
   accessToken,
 
   onViewExecution,
+
+  onViewComparison,
 
   onViewAllRuns,
 
@@ -64,51 +60,17 @@ export function RunHistoryArea({
 
   onViewExecution: (runId: string, executionId: string) => void
 
+  onViewComparison?: (comparisonId: string) => void
+
   onViewAllRuns: () => void
 
   onSessionExpired: () => void
 
   onAccessDenied: () => void
 }) {
-  const {
-    filters,
-    updateFilters,
-    clearFilters,
-    page,
-    setPage,
-    items,
-    totalItems,
-    totalPages,
-    loading,
-    error,
-    refetch,
-  } = useApiRunHistory(
-    projectId,
-
-    apiId,
-
-    accessToken,
-
-    onSessionExpired,
-
-    onAccessDenied,
-  )
-
-  const { environments } = useEnvironmentList(
-    projectId,
-    accessToken,
-    onSessionExpired,
-    onAccessDenied,
-  )
-
-  const envById = useMemo(
-    () => new Map(environments.map((e) => [e.environmentId, e])),
-    [environments],
-  )
-
-  const rangeStart = totalItems === 0 ? 0 : (page - 1) * 20 + 1
-
-  const rangeEnd = Math.min(page * 20, totalItems)
+  const [selectedTestCaseKey, setSelectedTestCaseKey] = useState<
+    string | null
+  >(null)
 
   return (
     <div className="p-6">
@@ -118,197 +80,374 @@ export function RunHistoryArea({
             Run History
           </h3>
           <p className="m-0 text-xs text-muted">
-            Past Run executions for this API.
+            {selectedTestCaseKey
+              ? "Chronological history for this Test Case."
+              : "One card per Test Case previously run against this API."}
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <Button variant="ghost" size="sm" onClick={onViewAllRuns}>
-            All Test Runs →
-          </Button>
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={refetch}
-            disabled={loading}
-          >
+        <Button variant="ghost" size="sm" onClick={onViewAllRuns}>
+          All Test Runs →
+        </Button>
+      </div>
+
+      {selectedTestCaseKey ? (
+        <TestCaseHistoryDrillDown
+          projectId={projectId}
+          apiId={apiId}
+          accessToken={accessToken}
+          testCaseKey={selectedTestCaseKey}
+          onViewExecution={onViewExecution}
+          onViewComparison={onViewComparison}
+          onBack={() => setSelectedTestCaseKey(null)}
+          onSessionExpired={onSessionExpired}
+          onAccessDenied={onAccessDenied}
+        />
+      ) : (
+        <TestCaseCardsView
+          projectId={projectId}
+          apiId={apiId}
+          accessToken={accessToken}
+          onViewExecution={onViewExecution}
+          onViewHistory={setSelectedTestCaseKey}
+          onSessionExpired={onSessionExpired}
+          onAccessDenied={onAccessDenied}
+        />
+      )}
+    </div>
+  )
+}
+
+function TestCaseCardsView({
+  projectId,
+  apiId,
+  accessToken,
+  onViewExecution,
+  onViewHistory,
+  onSessionExpired,
+  onAccessDenied,
+}: {
+  projectId: string
+  apiId: string
+  accessToken: string | null
+  onViewExecution: (runId: string, executionId: string) => void
+  onViewHistory: (testCaseKey: string) => void
+  onSessionExpired: () => void
+  onAccessDenied: () => void
+}) {
+  const { items, loading, error, refetch, runTestCaseAgain } = useTestCases(
+    projectId,
+    apiId,
+    accessToken,
+    onSessionExpired,
+    onAccessDenied,
+  )
+
+  const [runningKey, setRunningKey] = useState<string | null>(null)
+  const [runAgainError, setRunAgainError] = useState<string | null>(null)
+
+  async function handleRunAgain(item: TestCaseListItem) {
+    setRunningKey(item.testCaseKey)
+    setRunAgainError(null)
+    try {
+      const result = await runTestCaseAgain(item.lastExecutionId)
+      const newExecution = result.executions[0]
+      if (newExecution) {
+        onViewExecution(result.runId, newExecution.executionId)
+      }
+    } catch (err) {
+      setRunAgainError(
+        err instanceof ApiError ? err.message : "Unable to run this Test Case again.",
+      )
+    } finally {
+      setRunningKey(null)
+    }
+  }
+
+  return (
+    <Card>
+      <div className="flex flex-col gap-4">
+        <div className="flex items-center justify-end">
+          <Button variant="secondary" size="sm" onClick={refetch} disabled={loading}>
             Refresh
           </Button>
         </div>
-      </div>
 
-      <Card>
-        <div className="flex flex-col gap-4">
-          <div className="flex flex-wrap items-end gap-2.5">
-            <label className={labelClass}>
-              Environment
-              <select
-                className={selectClass}
-                value={filters.environmentId}
-                onChange={(e) =>
-                  updateFilters({ environmentId: e.target.value })
-                }
-              >
-                <option value="">All Environments</option>
-                {environments.map((env) => (
-                  <option key={env.environmentId} value={env.environmentId}>
-                    {env.environmentName}
-                  </option>
-                ))}
-              </select>
-            </label>
+        {runAgainError && <p className="m-0 text-xs text-error">{runAgainError}</p>}
 
-            <Button variant="ghost" size="sm" onClick={clearFilters}>
-              Clear filters
+        {loading && <p className="m-0 text-sm text-muted">Loading…</p>}
+
+        {!loading && error && (
+          <div className="flex flex-col items-start gap-2">
+            <p className="m-0 text-sm text-error">{error}</p>
+            <Button variant="secondary" size="sm" onClick={refetch}>
+              Retry
             </Button>
           </div>
+        )}
 
-          {loading && <p className="m-0 text-sm text-muted">Loading…</p>}
+        {!loading && !error && items.length === 0 && (
+          <p className="m-0 text-sm text-muted">
+            No Test Case history yet for this API — run it once from Run API
+            to start one.
+          </p>
+        )}
 
-          {!loading && error && (
-            <div className="flex flex-col items-start gap-2">
-              <p className="m-0 text-sm text-error">{error}</p>
-              <Button variant="secondary" size="sm" onClick={refetch}>
-                Retry
-              </Button>
-            </div>
-          )}
+        {!loading && !error && items.length > 0 && (
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {items.map((item) => {
+              const resultDisplay = getTestCaseResultDisplay(item.lastResult)
+              const isRunning = runningKey === item.testCaseKey
+              const inputFields = getInputSummaryFields(item.inputSummary)
+              const visibleInputFields = inputFields.slice(
+                0,
+                MAX_CARD_INPUT_FIELDS,
+              )
+              const hiddenInputFieldCount =
+                inputFields.length - visibleInputFields.length
 
-          {!loading && !error && items.length === 0 && (
-            <div className="flex flex-col items-start gap-2">
-              <p className="m-0 text-sm text-muted">
-                No Run executions yet for this API.
-              </p>
-              {filters.environmentId && (
-                <Button variant="secondary" size="sm" onClick={clearFilters}>
-                  Clear filters
-                </Button>
-              )}
-            </div>
-          )}
+              return (
+                <div
+                  key={item.testCaseKey}
+                  className="flex flex-col gap-2 rounded-lg border border-border p-4"
+                >
+                  {/* The card represents a Test Case (API + Environment + Auth +
+                  Test Account + Request Input), not just an Environment — two
+                  different Test Cases can share the same Environment, so
+                  Environment is identifying detail below, never the heading.
+                  "Test Case N" renders the backend's stable testCaseNumber
+                  (ranked by first-ever run), never the array index — this
+                  list is sorted most-recently-run first, so index position
+                  shifts on every Run Again while the number must not. */}
+                  <div className="flex items-start justify-between gap-2">
+                    <span className="text-sm font-semibold text-gray-900">
+                      Test Case {item.testCaseNumber}
+                    </span>
+                    <Badge tone={resultDisplay.tone} label={resultDisplay.label} />
+                  </div>
 
-          {!loading && !error && items.length > 0 && (
-            <>
-              <div className="overflow-auto">
-                <table className="w-full border-collapse">
-                  <thead>
-                    <tr>
-                      <th className={thClass}>Run ID</th>
-                      <th className={thClass}>Type</th>
-                      <th className={thClass}>Env</th>
-                      <th className={thClass}>Status</th>
-                      <th className={thClass}>Outcome</th>
-                      <th className={thClass}>HTTP</th>
-                      <th className={thClass}>Version</th>
-                      <th className={thClass}>Created</th>
-                      <th className={`${thClass} text-center`}>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {items.map((item) => {
-                      const env = envById.get(item.environmentId)
+                  <div className="flex flex-col gap-1 text-xs text-muted">
+                    <span>
+                      <span className="text-gray-700">Environment:</span>{" "}
+                      {item.environmentName}
+                    </span>
+                    <span>
+                      <span className="text-gray-700">Auth:</span>{" "}
+                      {item.authType ? formatCode(item.authType) : "No auth"}
+                      {item.testAccountLabel && ` · ${item.testAccountLabel}`}
+                    </span>
+                  </div>
 
-                      const showOutcomeBadge =
-                        item.executionOutcome !== null &&
-                        item.executionOutcome !== item.executionStatus
+                  <div className="flex flex-col gap-1">
+                    <span className="text-[11px] font-semibold text-gray-700">
+                      Request Input
+                    </span>
 
-                      return (
-                        <tr key={item.executionId} className={trHoverClass}>
-                          <td
-                            className={`${tdClass} max-w-[110px] truncate font-mono`}
-                            title={item.runId}
+                    {visibleInputFields.length === 0 ? (
+                      <span className="text-xs text-muted">
+                        No input parameters.
+                      </span>
+                    ) : (
+                      <div className="flex flex-col gap-0.5">
+                        {visibleInputFields.map((field, fieldIndex) => (
+                          <div
+                            key={`${field.key}-${fieldIndex}`}
+                            className="flex items-baseline justify-between gap-2 text-xs"
                           >
-                            {item.runId}
-                          </td>
-                          <td className={tdClass}>
-                            <Badge
-                              tone="neutral"
-                              label={
-                                item.runType === "BATCH" ? "Batch" : "Single"
-                              }
-                            />
-                          </td>
-                          <td className={tdClass}>
-                            {env?.environmentName ?? "(unknown)"}
-                          </td>
-                          <td className={tdClass}>
-                            <Badge
-                              tone={
-                                STATUS_TONE[item.executionStatus] ?? "neutral"
-                              }
-                              label={formatCode(item.executionStatus)}
-                            />
-                          </td>
-                          <td className={tdClass}>
-                            {showOutcomeBadge ? (
-                              <Badge
-                                tone={
-                                  OUTCOME_TONE[item.executionOutcome!] ??
-                                  "neutral"
-                                }
-                                label={formatCode(item.executionOutcome!)}
-                              />
-                            ) : (
-                              <span className="text-xs text-muted">—</span>
-                            )}
-                          </td>
-                          <td className={tdClass}>{item.httpStatus ?? "—"}</td>
-                          <td className={tdClass}>
-                            <span className="font-mono text-xs">
-                              {item.apiVersion || "UNKNOWN"} /{" "}
-                              {item.databaseVersion || "UNKNOWN"}
+                            <span className="shrink-0 font-mono text-gray-700">
+                              {field.key}
                             </span>
-                          </td>
-                          <td className={tdClass}>
-                            {formatTimestamp(item.createdAt)}
-                          </td>
-                          <td className={`${tdClass} text-center`}>
-                            <Button
-                              variant="secondary"
-                              size="sm"
-                              onClick={() =>
-                                onViewExecution(item.runId, item.executionId)
-                              }
-                            >
-                              View
-                            </Button>
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
+                            <span className="truncate font-mono text-muted">
+                              {field.value}
+                            </span>
+                          </div>
+                        ))}
+                        {hiddenInputFieldCount > 0 && (
+                          <span className="text-[11px] text-muted">
+                            + {hiddenInputFieldCount} more
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
 
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-muted">
-                  Showing {rangeStart}–{rangeEnd} of {totalItems}
-                </span>
-                <div className="flex items-center gap-2">
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => setPage(Math.max(1, page - 1))}
-                    disabled={page <= 1}
-                  >
-                    Prev
-                  </Button>
-                  <span className="text-xs text-muted">
-                    Page {page} of {totalPages}
-                  </span>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => setPage(Math.min(totalPages, page + 1))}
-                    disabled={page >= totalPages}
-                  >
-                    Next
-                  </Button>
+                  <div className="flex items-center justify-between text-xs text-muted">
+                    <span>Last run {formatTimestamp(item.lastRunAt)}</span>
+                    <span>
+                      {item.runCount} run{item.runCount === 1 ? "" : "s"}
+                    </span>
+                  </div>
+
+                  <div className="mt-2 flex items-center gap-2">
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      onClick={() => handleRunAgain(item)}
+                      disabled={isRunning}
+                    >
+                      {isRunning ? "Running…" : "Run Again"}
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => onViewHistory(item.testCaseKey)}
+                    >
+                      View History
+                    </Button>
+                  </div>
                 </div>
-              </div>
-            </>
-          )}
+              )
+            })}
+          </div>
+        )}
+      </div>
+    </Card>
+  )
+}
+
+function TestCaseHistoryDrillDown({
+  projectId,
+  apiId,
+  accessToken,
+  testCaseKey,
+  onViewExecution,
+  onViewComparison,
+  onBack,
+  onSessionExpired,
+  onAccessDenied,
+}: {
+  projectId: string
+  apiId: string
+  accessToken: string | null
+  testCaseKey: string
+  onViewExecution: (runId: string, executionId: string) => void
+  onViewComparison?: (comparisonId: string) => void
+  onBack: () => void
+  onSessionExpired: () => void
+  onAccessDenied: () => void
+}) {
+  const { page, setPage, items, totalItems, totalPages, loading, error, refetch } =
+    useApiRunHistory(
+      projectId,
+      apiId,
+      accessToken,
+      onSessionExpired,
+      onAccessDenied,
+      testCaseKey,
+    )
+
+  return (
+    <Card>
+      <div className="flex flex-col gap-4">
+        <div className="flex items-center justify-between">
+          <Button variant="ghost" size="sm" onClick={onBack}>
+            ← Back to Test Cases
+          </Button>
+          <Button variant="secondary" size="sm" onClick={refetch} disabled={loading}>
+            Refresh
+          </Button>
         </div>
-      </Card>
-    </div>
+
+        {loading && <p className="m-0 text-sm text-muted">Loading…</p>}
+
+        {!loading && error && (
+          <div className="flex flex-col items-start gap-2">
+            <p className="m-0 text-sm text-error">{error}</p>
+            <Button variant="secondary" size="sm" onClick={refetch}>
+              Retry
+            </Button>
+          </div>
+        )}
+
+        {!loading && !error && items.length === 0 && (
+          <p className="m-0 text-sm text-muted">No executions found.</p>
+        )}
+
+        {!loading && !error && items.length > 0 && (
+          <>
+            <div className="overflow-auto">
+              <table className="w-full border-collapse">
+                <thead>
+                  <tr>
+                    <th className={thClass}>Timestamp</th>
+                    <th className={thClass}>Result</th>
+                    <th className={thClass}>Compared with</th>
+                    <th className={thClass}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {items.map((item) => {
+                    const resultDisplay = getTestCaseResultDisplay(
+                      item.comparisonResult,
+                    )
+                    const isComparable =
+                      item.comparisonResult === "SAME" ||
+                      item.comparisonResult === "DIFFERENT"
+
+                    return (
+                      <tr key={item.executionId} className={trHoverClass}>
+                        <td className={tdClass}>
+                          {formatTimestamp(item.createdAt)}
+                        </td>
+                        <td className={tdClass}>
+                          <Badge
+                            tone={resultDisplay.tone}
+                            label={resultDisplay.label}
+                          />
+                        </td>
+                        <td className={tdClass}>
+                          {item.comparedWithAt ? (
+                            formatTimestamp(item.comparedWithAt)
+                          ) : (
+                            <span className="text-muted">—</span>
+                          )}
+                        </td>
+                        <td className={tdClass}>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={() =>
+                              isComparable && item.comparisonId && onViewComparison
+                                ? onViewComparison(item.comparisonId)
+                                : onViewExecution(item.runId, item.executionId)
+                            }
+                          >
+                            {isComparable ? "View Differences" : "View"}
+                          </Button>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-muted">{totalItems} total</span>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setPage(Math.max(1, page - 1))}
+                  disabled={page <= 1}
+                >
+                  Prev
+                </Button>
+                <span className="text-xs text-muted">
+                  Page {page} of {totalPages}
+                </span>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setPage(Math.min(totalPages, page + 1))}
+                  disabled={page >= totalPages}
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    </Card>
   )
 }

@@ -31,6 +31,8 @@ export interface CreateRunPayload {
 
   environmentId: string
 
+  testAccountId?: string
+
   executions: RunExecutionInput[]
 }
 
@@ -70,6 +72,16 @@ export interface RunExecutionListItem {
   endedAt: string | null
 
   durationMs: number | null
+
+  // Phase 3 Test Case History & Run Again — frozen at dispatch time (null for
+  // executions that never reached dispatch, e.g. SKIPPED/NOT_EXECUTED).
+  testCaseKey: string | null
+
+  authType: string | null
+
+  // Advanced "Re-run this execution" lineage only — null for every ordinary
+  // Run Again/Run API execution.
+  rerunOfExecutionId: string | null
 }
 
 export interface RunDetail {
@@ -94,6 +106,10 @@ export interface RunDetail {
   note: string | null
 
   summary: RunExecutionSummary
+
+  // The Test Account selected for this whole Run (null when the
+  // Environment's authType is not LOGIN_FORM, or none was selected).
+  testAccountId: string | null
 
   executions: RunExecutionListItem[]
 }
@@ -236,6 +252,17 @@ export interface RunExecutionDetail {
   // PENDING/SKIPPED/INTERRUPTED/NOT_EXECUTED.
 
   comparisonAvailability: ComparisonAvailabilityInfo | null
+
+  // Phase 3 Test Case History & Run Again — see RunExecutionListItem's
+  // matching fields for testCaseKey/authType/rerunOfExecutionId; testAccountId
+  // here is the parent Run's selected Test Account (Run.testAccountId).
+  testCaseKey: string | null
+
+  authType: string | null
+
+  testAccountId: string | null
+
+  rerunOfExecutionId: string | null
 }
 
 export interface ApiRunExecutionListItem {
@@ -258,4 +285,76 @@ export interface ApiRunExecutionListItem {
   databaseVersion: string
 
   createdAt: string
+
+  // Phase 3 Test Case History & Run Again — see RunExecutionDetail's matching
+  // fields.
+  testCaseKey: string | null
+
+  authType: string | null
+
+  testAccountId: string | null
+
+  rerunOfExecutionId: string | null
+
+  // Phase 3 §8 Test Case History drill-down — this row's own comparison
+  // outcome, same derivation/precedence as TestCaseListItem.lastResult: never
+  // conflates "no comparison" (UNAVAILABLE) with "different test case" or
+  // with SAME/DIFFERENT.
+  comparisonResult: "SAME" | "DIFFERENT" | "INITIAL_RUN" | "UNAVAILABLE"
+
+  // The baseline Snapshot's completedAt this row was actually compared
+  // against (null whenever comparisonResult is INITIAL_RUN/UNAVAILABLE with
+  // no baseline at all).
+  comparedWithAt: string | null
+
+  // The Comparison this row's own execution sourced, when one exists — lets
+  // a SAME/DIFFERENT row's "View Differences" action open that Comparison
+  // directly instead of the execution's own detail page. Null whenever
+  // comparisonResult is not SAME/DIFFERENT.
+  comparisonId: string | null
+}
+
+// Phase 3 Test Case History & Run Again (§7/§8) — mirrors
+// apps/api/src/modules/run/runs.service.ts TestCaseListItem exactly. One card
+// per distinct testCaseKey for this API, backing the Run History tab's
+// grouped view. lastResult: INITIAL_RUN (no baseline existed yet, concept A
+// had nothing to chain to), SAME/DIFFERENT (concept C — the only two values
+// ever shown as an automatic comparison's actual outcome), or UNAVAILABLE (a
+// baseline candidate existed but no Comparison ever completed against it —
+// blocked at ELIGIBILITY/INPUT (concept B), no target Snapshot was produced,
+// or it is still in flight). Never conflate UNAVAILABLE with "different test
+// case" — a card's identity is testCaseKey alone.
+export interface TestCaseListItem {
+  testCaseKey: string
+
+  apiId: string
+
+  environmentId: string
+
+  environmentName: string
+
+  authType: string | null
+
+  testAccountId: string | null
+
+  testAccountLabel: string | null
+
+  // The latest execution's raw submitted Request Input
+  // (RunExecution.requestInputSnapshot), same shape as the payload Run API
+  // originally submitted.
+  inputSummary: RunRequestValuesPayload | null
+
+  lastRunAt: string
+
+  lastExecutionId: string
+
+  lastResult: "SAME" | "DIFFERENT" | "INITIAL_RUN" | "UNAVAILABLE"
+
+  runCount: number
+
+  // Stable display ordinal — ranked by this Test Case's first-ever run,
+  // which never changes once set. Render this instead of array index: the
+  // list itself is still sorted most-recently-run first, so index position
+  // moves on every Run Again while this number must not.
+  testCaseNumber: number
 }

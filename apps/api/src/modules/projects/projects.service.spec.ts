@@ -6,6 +6,7 @@ describe("ProjectsService", () => {
     const auditWriter = { record: jest.fn().mockResolvedValue(undefined) };
     const prisma: {
       project: { findMany: jest.Mock; count: jest.Mock; findFirst: jest.Mock; create: jest.Mock; update: jest.Mock };
+      environment: { create: jest.Mock };
       $transaction: jest.Mock;
     } = {
       project: {
@@ -14,6 +15,15 @@ describe("ProjectsService", () => {
         findFirst: jest.fn(),
         create: jest.fn(),
         update: jest.fn(),
+      },
+      environment: {
+        create: jest.fn(
+          async ({ data }: { data: { environmentName: string; classification: string; allowRun: boolean } }) => ({
+            environmentId: `env-${data.environmentName}`,
+            ...data,
+            environmentStatus: "ACTIVE",
+          }),
+        ),
       },
       $transaction: jest.fn(async (cb: (tx: unknown) => unknown) => cb(prisma)),
     };
@@ -71,6 +81,54 @@ describe("ProjectsService", () => {
         prisma,
       );
       expect(result.projectStatus).toBe("ACTIVE");
+    });
+
+    it("seeds exactly Dev/UAT/Production environments with the classification-derived allowRun default", async () => {
+      const { service, prisma } = makeService();
+      prisma.project.create.mockResolvedValue({
+        projectId: "p-1",
+        projectName: "New Project",
+        description: null,
+        projectStatus: "ACTIVE",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+
+      await service.create({ projectName: "New Project" } as never, "admin-1");
+
+      expect(prisma.environment.create).toHaveBeenCalledTimes(3);
+      const seeded = prisma.environment.create.mock.calls.map((call) => call[0].data);
+      expect(seeded).toEqual([
+        expect.objectContaining({ projectId: "p-1", environmentName: "Dev", classification: "NON_PRODUCTION", allowRun: true }),
+        expect.objectContaining({ projectId: "p-1", environmentName: "UAT", classification: "NON_PRODUCTION", allowRun: true }),
+        expect.objectContaining({ projectId: "p-1", environmentName: "Production", classification: "PRODUCTION", allowRun: false }),
+      ]);
+    });
+
+    it("records one ENVIRONMENT_CREATED audit row per seeded environment, alongside PROJECT_CREATED", async () => {
+      const { service, prisma, auditWriter } = makeService();
+      prisma.project.create.mockResolvedValue({
+        projectId: "p-1",
+        projectName: "New Project",
+        description: null,
+        projectStatus: "ACTIVE",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+
+      await service.create({ projectName: "New Project" } as never, "admin-1");
+
+      const environmentAudits = auditWriter.record.mock.calls.filter(
+        (call) => call[0].eventType === "ENVIRONMENT_CREATED",
+      );
+      expect(environmentAudits).toHaveLength(3);
+      for (const call of environmentAudits) {
+        expect(call[0]).toEqual(
+          expect.objectContaining({ result: "SUCCESS", actorUserId: "admin-1", targetType: "ENVIRONMENT", projectId: "p-1" }),
+        );
+        expect(call[1]).toBe(prisma);
+      }
+      expect(environmentAudits.map((call) => call[0].afterData.environmentName)).toEqual(["Dev", "UAT", "Production"]);
     });
   });
 

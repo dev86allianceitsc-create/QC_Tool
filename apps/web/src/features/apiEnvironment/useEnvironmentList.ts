@@ -71,6 +71,7 @@ export function useEnvironmentList(
     async (input: {
       environmentName: string
       classification: EnvironmentClassification
+      baseUrl?: string
     }) => {
       if (!accessToken || !projectId) return
 
@@ -94,6 +95,8 @@ export function useEnvironmentList(
         allowRun?: boolean
 
         environmentStatus?: EnvironmentStatus
+
+        baseUrl?: string
       },
     ) => {
       if (!accessToken || !projectId) return

@@ -3,12 +3,14 @@ import { Badge } from "../../components/ui/Badge"
 import { Button } from "../../components/ui/Button"
 import { CopyableText } from "../../components/ui/CopyableText"
 import { TabBar } from "../../components/ui/TabBar"
+import { ApiError } from "../../services/api-client"
 import { formatTimestamp } from "../apiEnvironment/ExecutionResultView"
 import { useApiList } from "../apiEnvironment/useApiList"
 import { useEnvironmentList } from "../apiEnvironment/useEnvironmentList"
 import { formatSnapshotShortId } from "../snapshot/snapshot-id.util"
 import { ComparisonAttemptsTab } from "./ComparisonAttemptsTab"
 import { ComparisonClassificationTab } from "./ComparisonClassificationTab"
+import { reevaluateComparison } from "./comparison.api"
 import {
   getClassificationDisplay,
   getProcessingStatusDisplay,
@@ -90,6 +92,8 @@ export function ComparisonDetailScreen({
     onAccessDenied,
   )
   const [tab, setTab] = useState<DetailTab>("overview")
+  const [reevaluating, setReevaluating] = useState(false)
+  const [reevaluateError, setReevaluateError] = useState<string | null>(null)
 
   const apiById = useMemo(() => new Map(apis.map((a) => [a.apiId, a])), [apis])
   const envById = useMemo(
@@ -110,6 +114,32 @@ export function ComparisonDetailScreen({
     comparison && comparison.result === "DIFFERENT"
       ? getClassificationDisplay(comparison.classification)
       : null
+
+  // Re-evaluate only ever makes sense once a Comparison has a COMPLETED
+  // attempt to recompute (reevaluateComparisonAttempt rejects anything
+  // else with LATEST_ATTEMPT_NOT_COMPLETED) — a mid-flight/blocked/failed
+  // attempt is Retry's job, surfaced separately on the Attempts tab. The
+  // backend already awaits the engine before responding, so a single
+  // refetch() after the call is enough to show the final result with no
+  // extra polling.
+  async function handleReevaluate() {
+    if (!accessToken || !comparison) return
+    setReevaluating(true)
+    setReevaluateError(null)
+    try {
+      await reevaluateComparison(comparison.comparisonId, accessToken)
+      setReevaluateError(null)
+    } catch (err) {
+      setReevaluateError(
+        err instanceof ApiError
+          ? err.message
+          : "Unable to re-evaluate this Comparison.",
+      )
+    } finally {
+      setReevaluating(false)
+      await refetch()
+    }
+  }
 
   return (
     <div>
@@ -147,12 +177,23 @@ export function ComparisonDetailScreen({
                 <span>·</span>
                 <span>Created {formatTimestamp(comparison.createdAt)}</span>
               </div>
-              <div className="mt-1.5 flex items-center gap-1 font-mono text-xs">
+              <div className="mt-1.5 text-sm font-medium text-gray-900">
+                Previous{" "}
+                {formatTimestamp(
+                  comparison.baselineSnapshot.executionCompletedAt,
+                )}
+                <span className="text-muted"> → </span>
+                Current{" "}
+                {formatTimestamp(
+                  comparison.targetSnapshot.executionCompletedAt,
+                )}
+              </div>
+              <div className="mt-1 flex items-center gap-1 font-mono text-[10px] text-muted">
                 <CopyableText
                   value={comparison.baselineSnapshotId}
                   display={formatSnapshotShortId(comparison.baselineSnapshotId)}
                 />
-                <span className="text-muted">→</span>
+                <span>→</span>
                 <CopyableText
                   value={comparison.targetSnapshotId}
                   display={formatSnapshotShortId(comparison.targetSnapshotId)}
@@ -171,15 +212,33 @@ export function ComparisonDetailScreen({
             </>
           )}
         </div>
-        <Button
-          variant="secondary"
-          size="sm"
-          onClick={refetch}
-          disabled={loading}
-        >
-          Refresh
-        </Button>
+        <div className="flex items-center gap-2">
+          {comparison && comparison.processingStatus === "COMPLETED" && (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={handleReevaluate}
+              disabled={reevaluating}
+            >
+              {reevaluating ? "Re-evaluating..." : "Re-evaluate"}
+            </Button>
+          )}
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={refetch}
+            disabled={loading}
+          >
+            Refresh
+          </Button>
+        </div>
       </div>
+
+      {reevaluateError && (
+        <div className="mx-5 mt-4">
+          <p className="m-0 text-xs text-error">{reevaluateError}</p>
+        </div>
+      )}
 
       {loading && (
         <div className="p-5">
@@ -291,9 +350,12 @@ export function ComparisonDetailScreen({
             <ComparisonFindingsTab
               comparisonId={comparison.comparisonId}
               phase="OUTPUT"
+              projectId={projectId}
+              apiId={comparison.apiId}
               accessToken={accessToken}
               onSessionExpired={onSessionExpired}
               onAccessDenied={onAccessDenied}
+              detailProcessingStatus={comparison.processingStatus}
             />
           )}
           {tab === "input" && (
@@ -303,6 +365,7 @@ export function ComparisonDetailScreen({
               accessToken={accessToken}
               onSessionExpired={onSessionExpired}
               onAccessDenied={onAccessDenied}
+              detailProcessingStatus={comparison.processingStatus}
             />
           )}
           {tab === "attempts" && (

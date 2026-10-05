@@ -11,6 +11,17 @@ import type {
 
 import type { RequestInputDefinition } from "./requestInput.types"
 
+import type { TestAccount } from "./authentication.types"
+
+const TEST_ACCOUNT: TestAccount = {
+  testAccountId: "ta1",
+  environmentId: "e1",
+  label: "Standard User",
+  username: "user1",
+  createdAt: "t",
+  updatedAt: "t",
+}
+
 const ENVIRONMENTS: EnvironmentListItem[] = [
   {
     environmentId: "e1",
@@ -18,6 +29,7 @@ const ENVIRONMENTS: EnvironmentListItem[] = [
     classification: "NON_PRODUCTION",
     allowRun: true,
     environmentStatus: "ACTIVE",
+    baseUrl: null,
     createdAt: "t",
     updatedAt: "t",
   },
@@ -37,6 +49,12 @@ const CONFIG: ApiEnvironmentConfigListItem = {
   urlStatus: "CONFIGURED",
 
   fullUrl: "https://api.example.com/widgets/{id}",
+
+  environmentBaseUrl: null,
+
+  effectiveUrl: "https://api.example.com/widgets/{id}",
+
+  effectiveUrlSource: "OVERRIDE",
 
   credentialStatus: "NOT_REQUIRED",
 }
@@ -63,11 +81,22 @@ function definitionWith(
   }
 }
 
+const RUN_EXECUTION: React.ComponentProps<typeof RunApiArea>["runExecution"] = {
+  run: null,
+  executionDetail: null,
+  executing: false,
+  timedOut: false,
+  error: null,
+  execute: vi.fn(),
+  reset: vi.fn(),
+}
+
 function renderArea(
   overrides: Partial<React.ComponentProps<typeof RunApiArea>> = {},
 ) {
   return render(
     <RunApiArea
+      apiId="a1"
       httpMethod="GET"
       environments={ENVIRONMENTS}
       selectedEnvironmentId="e1"
@@ -77,8 +106,12 @@ function renderArea(
       executionTargetReadiness="configured"
       requestInputDefinition={definitionWith({})}
       authTypeLabel={null}
+      authType={null}
       credentialStatus="NOT_REQUIRED"
+      testAccounts={[]}
+      testAccountsLoading={false}
       runBlockers={[]}
+      runExecution={RUN_EXECUTION}
       {...overrides}
     />,
   )
@@ -88,6 +121,14 @@ function goToStep(label: string) {
   const nav = screen.getByRole("navigation", { name: "Run API steps" })
 
   fireEvent.click(within(nav).getByRole("button", { name: label }))
+}
+
+function getExecuteButton() {
+  const nav = screen.getByRole("navigation", { name: "Run API steps" })
+
+  return screen
+    .getAllByRole("button", { name: "Execute" })
+    .find((b) => !nav.contains(b))!
 }
 
 afterEach(() => {
@@ -139,7 +180,13 @@ describe("RunApiArea — Execution Target", () => {
 
   it("warns when no URL is configured, instead of showing an example URL that looks runnable", () => {
     renderArea({
-      config: { ...CONFIG, fullUrl: null, urlStatus: "NOT_CONFIGURED" },
+      config: {
+        ...CONFIG,
+        fullUrl: null,
+        urlStatus: "NOT_CONFIGURED",
+        effectiveUrl: null,
+        effectiveUrlSource: "NOT_CONFIGURED",
+      },
     })
 
     expect(screen.getByText(/No URL configured/)).toBeInTheDocument()
@@ -341,7 +388,13 @@ describe("RunApiArea — Request Preview", () => {
 
   it("warns instead of previewing a request when no URL is configured", () => {
     renderArea({
-      config: { ...CONFIG, fullUrl: null, urlStatus: "NOT_CONFIGURED" },
+      config: {
+        ...CONFIG,
+        fullUrl: null,
+        urlStatus: "NOT_CONFIGURED",
+        effectiveUrl: null,
+        effectiveUrlSource: "NOT_CONFIGURED",
+      },
     })
 
     goToStep("Request Preview")
@@ -351,57 +404,76 @@ describe("RunApiArea — Request Preview", () => {
 })
 
 describe("RunApiArea — Execute", () => {
-  it("shows an honest 'not available yet' placeholder with a permanently disabled Execute button", () => {
+  it("enables the Execute button once nothing blocks the Run", () => {
     renderArea()
 
     goToStep("Execute")
 
-    expect(screen.getByText(/Execution not available yet/)).toBeInTheDocument()
-
-    expect(
-      screen.getByTitle("Run execution is not part of this release."),
-    ).toBeDisabled()
+    expect(getExecuteButton()).toBeEnabled()
   })
-})
 
-describe("RunApiArea — never executes", () => {
-  it("never calls fetch during any interaction across any step", () => {
-    const fetchMock = vi.fn()
+  it("passes the staged values and version metadata through to runExecution.execute", () => {
+    const execute = vi.fn()
 
-    vi.stubGlobal("fetch", fetchMock)
-
-    renderArea({
-      requestInputDefinition: definitionWith({
-        queryParameters: [{ name: "status", required: false }],
-
-        requestBody: { bodyType: "JSON" },
-      }),
-    })
-
-    goToStep("Request Values")
-
-    fireEvent.change(screen.getByLabelText(/^status/), {
-      target: { value: "active" },
-    })
-
-    fireEvent.change(screen.getByLabelText("JSON Payload"), {
-      target: { value: "{}" },
-    })
-
-    goToStep("Version Metadata")
-
-    fireEvent.change(screen.getByLabelText("API Version"), {
-      target: { value: "2.4.0" },
-    })
-
-    goToStep("Request Preview")
+    renderArea({ runExecution: { ...RUN_EXECUTION, execute } })
 
     goToStep("Execute")
 
-    fireEvent.click(
-      screen.getByTitle("Run execution is not part of this release."),
-    )
+    fireEvent.click(getExecuteButton())
 
-    expect(fetchMock).not.toHaveBeenCalled()
+    expect(execute).toHaveBeenCalledWith(expect.anything(), "", "", undefined)
+  })
+})
+
+describe("RunApiArea — Test Account (Login Form)", () => {
+  it("shows a Test Account selector on Execution Target only when authType is LOGIN_FORM", () => {
+    renderArea()
+
+    expect(screen.queryByLabelText("Test Account")).not.toBeInTheDocument()
+
+    renderArea({ authType: "LOGIN_FORM", testAccounts: [TEST_ACCOUNT] })
+
+    expect(screen.getByLabelText("Test Account")).toBeInTheDocument()
+  })
+
+  it("disables Execute until a Test Account is selected, then threads it through on execute", () => {
+    const execute = vi.fn()
+
+    renderArea({
+      authType: "LOGIN_FORM",
+      testAccounts: [TEST_ACCOUNT],
+      runExecution: { ...RUN_EXECUTION, execute },
+    })
+
+    goToStep("Execute")
+
+    expect(getExecuteButton()).toBeDisabled()
+
+    goToStep("Execution Target")
+
+    fireEvent.change(screen.getByLabelText("Test Account"), {
+      target: { value: TEST_ACCOUNT.testAccountId },
+    })
+
+    goToStep("Execute")
+
+    expect(getExecuteButton()).toBeEnabled()
+
+    fireEvent.click(getExecuteButton())
+
+    expect(execute).toHaveBeenCalledWith(
+      expect.anything(),
+      "",
+      "",
+      TEST_ACCOUNT.testAccountId,
+    )
+  })
+
+  it("blocks Execute with a warning when Login Form has zero Test Accounts", () => {
+    renderArea({ authType: "LOGIN_FORM", testAccounts: [] })
+
+    goToStep("Execute")
+
+    expect(getExecuteButton()).toBeDisabled()
   })
 })

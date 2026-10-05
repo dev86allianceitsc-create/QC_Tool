@@ -10,6 +10,8 @@ function snap(overrides: Partial<EligibilitySnapshotInput> = {}): EligibilitySna
     hasPayload: true,
     hasRequestHeaders: true,
     hasResponseHeaders: true,
+    authType: "NONE",
+    testAccountId: null,
     ...overrides,
   };
 }
@@ -47,6 +49,30 @@ describe("checkComparisonEligibility", () => {
   it("reports CONTEXT_MISMATCH when both sides have an auth context but they differ", () => {
     const outcome = checkComparisonEligibility(snap(), snap({ authContextKey: "auth-key-2" }));
     expect(outcome).toMatchObject({ eligible: false, reasonCode: "CONTEXT_MISMATCH" });
+  });
+
+  it("reports TEST_ACCOUNT_MISMATCH when authType is LOGIN_FORM and the Test Account differs", () => {
+    const outcome = checkComparisonEligibility(
+      snap({ authType: "LOGIN_FORM", testAccountId: "account-1" }),
+      snap({ authType: "LOGIN_FORM", testAccountId: "account-2" }),
+    );
+    expect(outcome).toMatchObject({ eligible: false, reasonCode: "TEST_ACCOUNT_MISMATCH" });
+  });
+
+  it("is eligible for matching LOGIN_FORM Test Accounts even though authType carries no bearing on authContextKey", () => {
+    const outcome = checkComparisonEligibility(
+      snap({ authType: "LOGIN_FORM", testAccountId: "account-1" }),
+      snap({ authType: "LOGIN_FORM", testAccountId: "account-1" }),
+    );
+    expect(outcome).toEqual({ eligible: true });
+  });
+
+  it("ignores a differing testAccountId when authType is not LOGIN_FORM — BEARER_TOKEN/NONE have no Test Account concept", () => {
+    const outcome = checkComparisonEligibility(
+      snap({ authType: "BEARER_TOKEN", testAccountId: "account-1" }),
+      snap({ authType: "BEARER_TOKEN", testAccountId: "account-2" }),
+    );
+    expect(outcome).toEqual({ eligible: true });
   });
 
   it("reports SNAPSHOT_INVALIDATED when side A is invalidated", () => {
@@ -88,6 +114,22 @@ describe("checkComparisonEligibility", () => {
     it("reports environment mismatch before auth-context and invalidation checks", () => {
       const outcome = checkComparisonEligibility(snap({ environmentId: "env-2", authContextKey: "", isInvalidated: true }), snap());
       expect(outcome).toMatchObject({ eligible: false, reasonCode: "ENVIRONMENT_MISMATCH" });
+    });
+
+    it("reports TEST_ACCOUNT_MISMATCH before invalidation when both are true", () => {
+      const outcome = checkComparisonEligibility(
+        snap({ authType: "LOGIN_FORM", testAccountId: "account-1", isInvalidated: true }),
+        snap({ authType: "LOGIN_FORM", testAccountId: "account-2" }),
+      );
+      expect(outcome).toMatchObject({ eligible: false, reasonCode: "TEST_ACCOUNT_MISMATCH" });
+    });
+
+    it("reports auth-context mismatch before the Test Account check", () => {
+      const outcome = checkComparisonEligibility(
+        snap({ authType: "LOGIN_FORM", testAccountId: "account-1", authContextKey: "auth-key-2" }),
+        snap({ authType: "LOGIN_FORM", testAccountId: "account-2" }),
+      );
+      expect(outcome).toMatchObject({ eligible: false, reasonCode: "CONTEXT_MISMATCH" });
     });
 
     it("reports invalidation before completeness when both are true", () => {

@@ -22,6 +22,9 @@ function makeExecution(
     startedAt: "2026-09-01T00:00:00.000Z",
     endedAt: "2026-09-01T00:00:01.000Z",
     durationMs: 1000,
+    testCaseKey: null,
+    authType: null,
+    rerunOfExecutionId: null,
     ...overrides,
   }
 }
@@ -49,6 +52,10 @@ function makeExecutionDetail(
     durationMs: 1000,
     snapshotSave: null,
     comparisonAvailability: null,
+    testCaseKey: null,
+    authType: null,
+    testAccountId: null,
+    rerunOfExecutionId: null,
     ...overrides,
   }
 }

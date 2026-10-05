@@ -25,7 +25,7 @@ import { useEnvironmentList } from "./useEnvironmentList"
 
 import { Button } from "../../components/ui/Button"
 
-import { thClass, tdClass, trHoverClass } from "../../components/ui/table"
+import { thClass, thCenterClass, tdClass, trHoverClass } from "../../components/ui/table"
 
 // UI-ENV-01: Environment List. Allow Run mutation is Admin-only (REQ-ENV-003)
 
@@ -49,6 +49,8 @@ export function EnvironmentListScreen({
   onSessionExpired,
 
   onAccessDenied,
+
+  onOpenAuthentication,
 }: {
   user: { email: string; role: Role }
 
@@ -61,6 +63,8 @@ export function EnvironmentListScreen({
   onSessionExpired: () => void
 
   onAccessDenied: () => void
+
+  onOpenAuthentication: (environmentId: string) => void
 }) {
   const isAdmin = user.role === "ADMIN"
 
@@ -100,6 +104,7 @@ export function EnvironmentListScreen({
     environmentName: string
     classification: EnvironmentClassification
     allowRun?: boolean
+    baseUrl?: string
   }) {
     setSaving(true)
 
@@ -198,10 +203,11 @@ export function EnvironmentListScreen({
               <tr>
                 <th className={thClass}>Name</th>
                 <th className={thClass}>Classification</th>
+                <th className={thClass}>Domain</th>
                 <th className={thClass}>Status</th>
                 <th className={thClass}>Allow Run</th>
                 {isAdmin && (
-                  <th className={`${thClass} text-center`}>Actions</th>
+                  <th className={thCenterClass}>Actions</th>
                 )}
               </tr>
             </thead>
@@ -218,6 +224,9 @@ export function EnvironmentListScreen({
                       <ClassificationBadge
                         classification={env.classification}
                       />
+                    </td>
+                    <td className={`${tdClass} text-muted`}>
+                      {env.baseUrl ?? "—"}
                     </td>
                     <td className={tdClass}>
                       <StatusBadge status={env.environmentStatus} />
@@ -244,6 +253,14 @@ export function EnvironmentListScreen({
                           disabled={projectInactive}
                         >
                           Edit
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          className="mr-1.5"
+                          onClick={() => onOpenAuthentication(env.environmentId)}
+                        >
+                          Authentication
                         </Button>
                         <Button
                           variant="secondary"

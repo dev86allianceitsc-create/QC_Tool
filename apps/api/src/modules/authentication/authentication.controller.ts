@@ -10,10 +10,12 @@ import { PutAuthenticationConfigurationDto } from "./dto/put-authentication-conf
 import { PutCredentialDto } from "./dto/put-credential.dto";
 
 // Group 3C — Authentication Configuration (REQ-SEC-002, REQ-AUTH-001/002/003).
-// Credential isolation boundary = (apiId, environmentId); Admin-only
-// mutation; Secret Credential Value is never returned by any route.
+// REVISION 3C-R02 — moved into Project Settings; the credential isolation
+// boundary is now the Environment alone (shared by every API run against
+// it). Admin-only mutation; Secret Credential Value is never returned by any
+// route.
 @ApiTags("authentication")
-@Controller("projects/:projectId/apis/:apiId/environment-configs/:environmentId/authentication")
+@Controller("projects/:projectId/environments/:environmentId/authentication")
 @UseGuards(SessionGuard)
 @ApiBearerAuth()
 export class AuthenticationController {
@@ -21,17 +23,16 @@ export class AuthenticationController {
 
   @Get()
   @UseGuards(ProjectAccessGuard)
-  @ApiOperation({ operationId: "getAuthenticationConfiguration", summary: "Get the Authentication Configuration for an API + Environment" })
+  @ApiOperation({ operationId: "getAuthenticationConfiguration", summary: "Get the Authentication Configuration for an Environment" })
   @ApiResponse({ status: 200, description: "Authentication Configuration (type, status, safe metadata)" })
   @ApiResponse({ status: 401, description: "SESSION_INVALID / SESSION_EXPIRED / SESSION_REVOKED" })
   @ApiResponse({ status: 403, description: "PROJECT_ACCESS_DENIED" })
   @ApiResponse({ status: 404, description: "NOT_FOUND" })
   async get(
     @Param("projectId", ParseUUIDPipe) projectId: string,
-    @Param("apiId", ParseUUIDPipe) apiId: string,
     @Param("environmentId", ParseUUIDPipe) environmentId: string,
   ): Promise<AuthenticationConfigurationResult> {
-    return this.authenticationService.get(projectId, apiId, environmentId);
+    return this.authenticationService.get(projectId, environmentId);
   }
 
   @Put()
@@ -47,12 +48,11 @@ export class AuthenticationController {
   @ApiResponse({ status: 422, description: "SEMANTIC_VALIDATION_ERROR" })
   async putConfiguration(
     @Param("projectId", ParseUUIDPipe) projectId: string,
-    @Param("apiId", ParseUUIDPipe) apiId: string,
     @Param("environmentId", ParseUUIDPipe) environmentId: string,
     @Body() dto: PutAuthenticationConfigurationDto,
     @CurrentUser() userId: string,
   ): Promise<AuthenticationConfigurationResult> {
-    return this.authenticationService.putConfiguration(projectId, apiId, environmentId, dto, userId);
+    return this.authenticationService.putConfiguration(projectId, environmentId, dto, userId);
   }
 
   @Put("credential")
@@ -67,12 +67,11 @@ export class AuthenticationController {
   @ApiResponse({ status: 409, description: "INVALID_STATE" })
   async putCredential(
     @Param("projectId", ParseUUIDPipe) projectId: string,
-    @Param("apiId", ParseUUIDPipe) apiId: string,
     @Param("environmentId", ParseUUIDPipe) environmentId: string,
     @Body() dto: PutCredentialDto,
     @CurrentUser() userId: string,
   ): Promise<AuthenticationConfigurationResult> {
-    return this.authenticationService.putCredential(projectId, apiId, environmentId, dto, userId);
+    return this.authenticationService.putCredential(projectId, environmentId, dto, userId);
   }
 
   @Delete("credential")
@@ -86,10 +85,9 @@ export class AuthenticationController {
   @ApiResponse({ status: 409, description: "INVALID_STATE" })
   async removeCredential(
     @Param("projectId", ParseUUIDPipe) projectId: string,
-    @Param("apiId", ParseUUIDPipe) apiId: string,
     @Param("environmentId", ParseUUIDPipe) environmentId: string,
     @CurrentUser() userId: string,
   ): Promise<AuthenticationConfigurationResult> {
-    return this.authenticationService.removeCredential(projectId, apiId, environmentId, userId);
+    return this.authenticationService.removeCredential(projectId, environmentId, userId);
   }
 }

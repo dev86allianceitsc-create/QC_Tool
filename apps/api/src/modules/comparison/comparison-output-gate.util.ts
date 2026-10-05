@@ -1,8 +1,11 @@
 import type { HeaderPair } from "../run/run-dispatch.util";
 import { COMPARISON_RULE_CODES } from "./comparison-finding.constants";
+import { VOLATILE_RESPONSE_HEADER_EXCLUSIONS } from "./comparison.constants";
 import type { ComparisonFindingInput } from "./comparison.service";
 import { findBodyDifferences } from "./body-diff.util";
 import { compareHeaderPairs } from "./header-diff.util";
+
+const EXCLUDED_RESPONSE_HEADER_NAMES = new Set<string>(VOLATILE_RESPONSE_HEADER_EXCLUSIONS);
 
 // Group 6/7 Comparison — OUTPUT gate (REQ-CMP-007/008/010). Runs only after
 // the INPUT gate (comparison-input-gate.util.ts) has already returned zero
@@ -37,9 +40,12 @@ export interface OutputGateSnapshotInput {
 // DIFFERENT and persisting these findings atomically is the engine
 // orchestrator's job, not this pure comparison step's.
 //
-// Deliberately never filters/excludes any response header (Date, nonce,
-// boundary, Authorization/WWW-Authenticate included) — same no-auto-
-// exclusion rule as the INPUT gate, no approved policy/version exists yet.
+// Filters out VOLATILE_RESPONSE_HEADER_EXCLUSIONS (comparison.constants.ts)
+// before diffing response headers — everything else (nonce, boundary,
+// Authorization/WWW-Authenticate included) still gets no auto-exclusion,
+// same as the INPUT gate: no approved general policy/version exists yet,
+// this is a narrow, named carve-out for headers that are never a meaningful
+// signal, not a general exclusion mechanism.
 export function checkOutputDifferences(a: OutputGateSnapshotInput, b: OutputGateSnapshotInput): ComparisonFindingInput[] {
   const findings: ComparisonFindingInput[] = [];
 
@@ -47,10 +53,14 @@ export function checkOutputDifferences(a: OutputGateSnapshotInput, b: OutputGate
     findings.push(httpStatusMismatchFinding(a.httpStatusCode, b.httpStatusCode));
   }
 
-  findings.push(...compareHeaderPairs(a.responseHeaders, b.responseHeaders, "RESPONSE_HEADER"));
+  findings.push(...compareHeaderPairs(excludeVolatileHeaders(a.responseHeaders), excludeVolatileHeaders(b.responseHeaders), "RESPONSE_HEADER"));
   findings.push(...findBodyDifferences(a.responseBody, b.responseBody, "RESPONSE_BODY"));
 
   return findings;
+}
+
+function excludeVolatileHeaders(headers: readonly HeaderPair[]): HeaderPair[] {
+  return headers.filter((header) => !EXCLUDED_RESPONSE_HEADER_NAMES.has(header.key.toLowerCase()));
 }
 
 // HTTP status codes are a small, fixed, non-secret vocabulary (100-599),

@@ -5,6 +5,8 @@ import { CurrentUser } from "../../common/decorators/current-user.decorator";
 import { ProjectAccessGuard } from "../../common/guards/project-access.guard";
 import { SessionGuard } from "../../common/guards/session.guard";
 import { ApiImportsService, ImportOutcome, PreviewImportResult } from "./api-imports.service";
+import { ApiDetail } from "./apis.service";
+import { ImportCurlFetchDto } from "./dto/import-curl-fetch.dto";
 import { ImportOpenApiDto } from "./dto/import-openapi.dto";
 import { UploadedMulterFile } from "./uploaded-file.type";
 
@@ -58,5 +60,23 @@ export class ApiImportsController {
     @CurrentUser() userId: string,
   ): Promise<ImportOutcome> {
     return this.apiImportsService.confirmImport(projectId, requireFile(file), dto, userId);
+  }
+
+  @Post("curl-fetch")
+  @ApiOperation({ operationId: "importApiFromCurlFetch", summary: "Create an API and its Request Input from a parsed curl/fetch command" })
+  @ApiResponse({ status: 201, description: "Created API, with its Request Input persisted in the same transaction" })
+  @ApiResponse({ status: 400, description: "VALIDATION_ERROR" })
+  @ApiResponse({ status: 401, description: "SESSION_INVALID / SESSION_EXPIRED / SESSION_REVOKED" })
+  @ApiResponse({ status: 403, description: "PROJECT_ACCESS_DENIED" })
+  @ApiResponse({ status: 404, description: "NOT_FOUND" })
+  @ApiResponse({ status: 409, description: "API_ALREADY_EXISTS" })
+  @ApiResponse({ status: 422, description: "SEMANTIC_VALIDATION_ERROR" })
+  @HttpCode(HttpStatus.CREATED)
+  async importCurlFetch(
+    @Param("projectId", ParseUUIDPipe) projectId: string,
+    @Body() dto: ImportCurlFetchDto,
+    @CurrentUser() userId: string,
+  ): Promise<ApiDetail> {
+    return this.apiImportsService.importFromCurlFetch(projectId, dto, userId);
   }
 }

@@ -51,23 +51,33 @@ const ENVIRONMENTS_PAGE = {
 const CONFIGS_PAGE = { apiId: "a1", items: [] }
 
 const AUTH_CONFIG = {
-  apiId: "a1",
-
   environmentId: "e1",
 
   authType: "NONE",
 
   credentialStatus: "NOT_REQUIRED",
 
-  loginUrl: null,
+  loginMode: null,
 
-  username: null,
+  loginUrl: null,
 
   usernameField: null,
 
   passwordField: null,
 
-  tokenResponsePath: null,
+  importMethod: null,
+
+  importUrl: null,
+
+  importHeaders: null,
+
+  importBodyFormat: null,
+
+  importBodyFields: null,
+
+  importUsernameLocation: null,
+
+  importPasswordLocation: null,
 
   updatedAt: null,
 }
@@ -174,7 +184,7 @@ async function waitForEnabledRunApiButton() {
 }
 
 describe("ApiDetailScreen — Configuration steps", () => {
-  it("shows the guided Configuration steps in order: Endpoint, Request Input, Authentication", async () => {
+  it("shows the guided Configuration steps in order: Endpoint, Request Input", async () => {
     stubFetch()
 
     renderScreen()
@@ -188,7 +198,6 @@ describe("ApiDetailScreen — Configuration steps", () => {
     expect(stepButtons.map((b) => b.getAttribute("aria-label"))).toEqual([
       "Endpoint",
       "Request Input",
-      "Authentication",
     ])
   })
 
@@ -222,23 +231,6 @@ describe("ApiDetailScreen — Configuration steps", () => {
     expect(screen.getByText("Fetch a widget by id.")).toBeInTheDocument()
   })
 
-  it("renders the Authentication tab with real configuration, driven by the API", async () => {
-    stubFetch()
-
-    renderScreen()
-
-    await screen.findByText("Fetch a widget by id.")
-
-    fireEvent.click(screen.getByText("Authentication"))
-
-    expect(await screen.findByText("Authentication Type")).toBeInTheDocument()
-
-    expect(
-      screen.getByText(
-        "No authentication is required for this API in this Environment.",
-      ),
-    ).toBeInTheDocument()
-  })
 })
 
 describe("ApiDetailScreen — Request Input persistence", () => {
@@ -417,7 +409,7 @@ describe("ApiDetailScreen — Run API", () => {
       "e1",
     )
 
-    fireEvent.click(screen.getByText("← Configuration"))
+    fireEvent.click(screen.getByRole("tab", { name: "Configuration" }))
 
     expect(
       await screen.findByRole("navigation", { name: "Configuration steps" }),

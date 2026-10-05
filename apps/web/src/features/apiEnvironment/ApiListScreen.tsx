@@ -10,6 +10,8 @@ import { deleteApi } from "./apiEnvironment.api"
 
 import { CreateEditApiModal } from "./CreateEditApiModal"
 
+import { ImportCurlFetchFlow } from "./ImportCurlFetchFlow"
+
 import { ImportSwaggerFlow } from "./ImportSwaggerFlow"
 
 import { InactiveBanner } from "./InactiveBanner"
@@ -27,13 +29,15 @@ import {
 
 import { useEnvironmentList } from "./useEnvironmentList"
 
+import type { RunRequestValues } from "./requestInput.types"
+
 import { Badge } from "../../components/ui/Badge"
 
 import { Button } from "../../components/ui/Button"
 
 import { HttpMethodBadge } from "../../components/ui/HttpMethodBadge"
 
-import { thClass, tdClass, trHoverClass } from "../../components/ui/table"
+import { thClass, thCenterClass, tdClass, trHoverClass } from "../../components/ui/table"
 
 // UI-API-01 / UI-RUN-01: API List for a Project. Per REQ-SEC-003, both ADMIN
 
@@ -68,6 +72,8 @@ export function ApiListScreen({
 
   onSelectApi,
 
+  onSelectApiForRun,
+
   onRunSelected,
 }: {
   user: { email: string; role: Role }
@@ -84,6 +90,8 @@ export function ApiListScreen({
 
   onSelectApi: (apiId: string) => void
 
+  onSelectApiForRun: (apiId: string, runValues: RunRequestValues) => void
+
   onRunSelected: (apiIds: string[], environmentId: string) => void
 }) {
   const isAdmin = user.role === "ADMIN"
@@ -98,6 +106,7 @@ export function ApiListScreen({
     createApi,
     importPreview,
     importConfirm,
+    importCurlFetch,
   } = useApiList(
     projectId,
 
@@ -125,6 +134,8 @@ export function ApiListScreen({
   const [showModal, setShowModal] = useState<"create" | null>(null)
 
   const [showImport, setShowImport] = useState(false)
+
+  const [showCurlImport, setShowCurlImport] = useState(false)
 
   const [modalError, setModalError] = useState<string | null>(null)
 
@@ -382,6 +393,15 @@ export function ApiListScreen({
                 >
                   Import from Swagger/OpenAPI
                 </button>
+                <button
+                  onClick={() => {
+                    setShowAddMenu(false)
+                    setShowCurlImport(true)
+                  }}
+                  className="block w-full border-t border-border px-3 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50"
+                >
+                  Import from curl/fetch
+                </button>
               </div>
             )}
           </div>
@@ -440,7 +460,7 @@ export function ApiListScreen({
                 <th className={thClass}>Name</th>
                 <th className={thClass}>Configuration — Env</th>
                 <th className={thClass}>Required Input</th>
-                <th className={`${thClass} text-center`}>Actions</th>
+                <th className={thCenterClass}>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -545,6 +565,17 @@ export function ApiListScreen({
           onConfirm={importConfirm}
           onClose={() => setShowImport(false)}
           onImported={() => void refetch()}
+        />
+      )}
+
+      {showCurlImport && (
+        <ImportCurlFetchFlow
+          onImport={importCurlFetch}
+          onClose={() => setShowCurlImport(false)}
+          onImported={(created, runValues) => {
+            void refetch()
+            onSelectApiForRun(created.apiId, runValues)
+          }}
         />
       )}
 

@@ -2,7 +2,7 @@ import { useMemo, useState } from "react"
 import { Badge } from "../../components/ui/Badge"
 import { Button } from "../../components/ui/Button"
 import { CopyableText } from "../../components/ui/CopyableText"
-import { tdClass, thClass, trHoverClass } from "../../components/ui/table"
+import { tdClass, thClass, thCenterClass, trHoverClass } from "../../components/ui/table"
 import { formatTimestamp } from "../apiEnvironment/ExecutionResultView"
 import { useApiList } from "../apiEnvironment/useApiList"
 import { useEnvironmentList } from "../apiEnvironment/useEnvironmentList"
@@ -183,7 +183,7 @@ export function ChainDetailScreen({
                       <th className={thClass}>Classification</th>
                       <th className={thClass}>Stopped at</th>
                       <th className={thClass}>Reason</th>
-                      <th className={`${thClass} text-center`}>Actions</th>
+                      <th className={thCenterClass}>Actions</th>
                     </tr>
                   </thead>
                   <tbody>
